@@ -1,10 +1,11 @@
-import type { SqlExecutor, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import type { SqlExecuteResult, SqlExecutor, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
 import { parseDuration, type Duration } from '../../utils/duration.util.js';
 import { describeValue, hasMethod, isolationSql } from '../../utils/executor.util.js';
 
 /** The part of a Prisma client (or of the transaction client `$transaction()` hands its callback) the executor uses. */
 export interface PrismaClientLike {
   $queryRawUnsafe(query: string, ...values: any[]): PromiseLike<unknown>;
+  $executeRawUnsafe(query: string, ...values: any[]): PromiseLike<number>;
 }
 
 /** The part of a Prisma client the executor uses. */
@@ -77,6 +78,10 @@ class PrismaExecutor implements SqlExecutor {
     return run<R>(this.prisma, text, params);
   }
 
+  execute(text: string, params: readonly unknown[] = []): Promise<SqlExecuteResult> {
+    return write(this.prisma, text, params);
+  }
+
   async transaction<T>(work: (transaction: SqlTransaction) => Promise<T>, options: SqlTransactionOptions = {}): Promise<T> {
     return this.prisma.$transaction((tx: PrismaClientLike) => work(prismaTransaction(tx)), {
       ...this.limits,
@@ -98,9 +103,17 @@ class PrismaExecutor implements SqlExecutor {
 }
 
 function prismaTransaction(tx: PrismaClientLike): SqlTransaction {
-  return { query: <R extends object>(text: string, params: readonly unknown[] = []) => run<R>(tx, text, params) };
+  return {
+    query: <R extends object>(text: string, params: readonly unknown[] = []) => run<R>(tx, text, params),
+    execute: (text: string, params: readonly unknown[] = []) => write(tx, text, params),
+  };
 }
 
 async function run<R extends object>(prisma: PrismaClientLike, text: string, params: readonly unknown[]): Promise<R[]> {
   return ((await prisma.$queryRawUnsafe(text, ...params)) ?? []) as R[];
+}
+
+/** `$executeRawUnsafe()` resolves to the count. */
+async function write(prisma: PrismaClientLike, text: string, params: readonly unknown[]): Promise<SqlExecuteResult> {
+  return { affectedRows: Number(await prisma.$executeRawUnsafe(text, ...params)) };
 }

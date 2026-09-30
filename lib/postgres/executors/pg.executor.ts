@@ -1,15 +1,15 @@
-import type { SqlExecutor, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
-import { describeValue, hasMethod, isolationSql } from '../../utils/executor.util.js';
+import type { SqlExecuteResult, SqlExecutor, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import { describeValue, hasMethod, isMysql2Client, isolationSql } from '../../utils/executor.util.js';
 
 /** The part of a node-postgres `Client` (or `PoolClient`) the executor uses. */
 export interface PgClientLike {
-  query(text: string, values?: any[]): Promise<{ rows: any[] }>;
+  query(text: string, values?: any[]): Promise<{ rows: any[]; rowCount?: number | null }>;
   connect(): Promise<unknown>;
 }
 
 /** The part of a node-postgres `Pool` the executor uses. */
 export interface PgPoolLike {
-  query(text: string, values?: any[]): Promise<{ rows: any[] }>;
+  query(text: string, values?: any[]): Promise<{ rows: any[]; rowCount?: number | null }>;
   connect(): Promise<PgClientLike & { release(error?: Error | boolean): void }>;
   readonly totalCount: number;
 }
@@ -42,6 +42,11 @@ export interface PgPoolLike {
  * `BEGIN` yet, or a failed transaction) is refused as well.
  */
 export function fromPg(pool: PgPoolLike | PgClientLike): SqlExecutor {
+  if (isMysql2Client(pool)) {
+    throw new TypeError(
+      "fromPg() takes a node-postgres Pool (or a connected Client), not a mysql2 pool or connection: a MySQL store takes that, through fromMysql2() from its package's /mysql subpath.",
+    );
+  }
   if (!hasMethod(pool, 'query')) {
     throw new TypeError(`fromPg() takes a node-postgres Pool (or a connected Client), got ${describeValue(pool)}.`);
   }
@@ -55,6 +60,10 @@ class PgPoolExecutor implements SqlExecutor {
 
   async query<R extends object>(text: string, params: readonly unknown[] = []): Promise<R[]> {
     return (await this.pool.query(text, [...params])).rows;
+  }
+
+  async execute(text: string, params: readonly unknown[] = []): Promise<SqlExecuteResult> {
+    return affected(await this.pool.query(text, [...params]));
   }
 
   async transaction<T>(work: (transaction: SqlTransaction) => Promise<T>, options: SqlTransactionOptions = {}): Promise<T> {
@@ -82,6 +91,10 @@ class PgClientExecutor implements SqlExecutor {
 
   query<R extends object>(text: string, params: readonly unknown[] = []): Promise<R[]> {
     return this.exclusive(async () => (await this.client.query(text, [...params])).rows);
+  }
+
+  execute(text: string, params: readonly unknown[] = []): Promise<SqlExecuteResult> {
+    return this.exclusive(async () => affected(await this.client.query(text, [...params])));
   }
 
   transaction<T>(work: (transaction: SqlTransaction) => Promise<T>, options: SqlTransactionOptions = {}): Promise<T> {
@@ -141,6 +154,9 @@ async function runTransaction<T>(client: PgClientLike, work: (transaction: SqlTr
 }
 
 function pgTransaction(transaction: unknown): SqlTransaction {
+  if (isMysql2Client(transaction)) {
+    throw new TypeError("Pass the node-postgres client your transaction runs on, not a mysql2 connection: the store's statements run on PostgreSQL.");
+  }
   if (!hasMethod(transaction, 'query') || !hasMethod(transaction, 'connect') || isPool(transaction)) {
     throw new TypeError(
       "Pass the node-postgres client your transaction runs on (const client = await pool.connect(); await client.query('BEGIN')), " +
@@ -164,7 +180,13 @@ function pgTransaction(transaction: unknown): SqlTransaction {
 function clientTransaction(client: PgClientLike): SqlTransaction {
   return {
     query: async <R extends object>(text: string, params: readonly unknown[] = []) => (await client.query(text, [...params])).rows as R[],
+    execute: async (text: string, params: readonly unknown[] = []) => affected(await client.query(text, [...params])),
   };
+}
+
+/** node-postgres's `rowCount`: the rows an INSERT, UPDATE or DELETE wrote (`null` for a statement without a count). */
+function affected(result: { rowCount?: number | null }): SqlExecuteResult {
+  return { affectedRows: result.rowCount ?? 0 };
 }
 
 function isPool(value: unknown): value is PgPoolLike {

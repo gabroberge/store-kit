@@ -15,8 +15,28 @@ export type SqlIsolationLevel = 'read uncommitted' | 'read committed' | 'repeata
  * ```
  */
 export interface SqlTransactionOptions {
-  /** Default: the database's (PostgreSQL's `default_transaction_isolation`, `read committed` unless changed). */
+  /**
+   * Default: the database's (PostgreSQL's `default_transaction_isolation`, `read committed` unless changed; MySQL's
+   * `transaction_isolation`, `repeatable read` unless changed). It applies to this transaction alone, never to the
+   * connection.
+   */
   isolationLevel?: SqlIsolationLevel;
+}
+
+/**
+ * What `execute()` resolves to: how many rows a statement wrote.
+ *
+ * ```ts
+ * const { affectedRows } = await tx.execute('UPDATE nest_queues_jobs SET lease_until = CAST(? AS SIGNED) WHERE id = ? AND lease_token = ?', p.values);
+ * ```
+ */
+export interface SqlExecuteResult {
+  /**
+   * The rows the statement inserted or deleted, or, for an UPDATE, the rows its WHERE matched, whether or not the
+   * update changed their values (as PostgreSQL counts them, and MySQL with the `FOUND_ROWS` client flag, which every
+   * client the kit covers sets by default).
+   */
+  affectedRows: number;
 }
 
 /**
@@ -30,18 +50,25 @@ export interface SqlTransactionOptions {
  */
 export interface SqlTransaction {
   /**
-   * Runs one statement, with its placeholders (`$1`, `$2`... on PostgreSQL) bound to `params` in order, and resolves
-   * to its rows (`[]` for a statement that returns none).
+   * Runs one statement, with its placeholders (`$1`, `$2`... on PostgreSQL, `?` on MySQL) bound to `params` in order,
+   * and resolves to its rows (`[]` for a statement that returns none).
    */
   query<R extends object = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<R[]>;
+  /**
+   * Runs one statement that writes (INSERT, UPDATE, DELETE) as `query()` does, and resolves to the rows it wrote: what
+   * a MySQL store reads where a PostgreSQL one has `RETURNING`. Every executor of the kit has it, and a MySQL one must
+   * (`@nestjs/store-kit/mysql`'s `SqlTransaction` requires it); it's optional here, so an executor written before it
+   * still satisfies this interface. For a statement that returns rows, use `query()`.
+   */
+  execute?(text: string, params?: readonly unknown[]): Promise<SqlExecuteResult>;
 }
 
 /**
  * How a store reaches its database through the client the application already has. `fromPg()`, `fromDrizzle()`,
- * `fromTypeOrm()`, `fromPrisma()` and `fromKysely()` from `@nestjs/store-kit/postgres` make one of a pool or an ORM;
- * anything else can implement it (`sqlExecutorContract()` from `@nestjs/store-kit/testing` checks one). Nothing in it
- * belongs to a store: every first-party store of a dialect takes the same executors, and with them the same
- * transaction objects.
+ * `fromTypeOrm()`, `fromPrisma()` and `fromKysely()` from `@nestjs/store-kit/postgres` make one of a pool or an ORM
+ * (`fromMysql2()` and the rest from `@nestjs/store-kit/mysql` on MySQL); anything else can implement it
+ * (`sqlExecutorContract()` from `@nestjs/store-kit/testing` checks one). Nothing in it belongs to a store: every
+ * first-party store of a dialect takes the same executors, and with them the same transaction objects.
  *
  * ```ts
  * const executor = fromDrizzle(db);
@@ -60,14 +87,20 @@ export interface SqlExecutor {
   /** Runs one statement outside any transaction (on a pool, on any of its connections), as `SqlTransaction.query()`. */
   query<R extends object = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<R[]>;
   /**
+   * Runs one statement that writes, outside any transaction, as `SqlTransaction.execute()`: optional here, on every
+   * executor of the kit, and required of a MySQL one.
+   */
+  execute?(text: string, params?: readonly unknown[]): Promise<SqlExecuteResult>;
+  /**
    * Runs `work` in a transaction of its own, on one connection: commits when `work` resolves, rolls back and rethrows
    * when it rejects.
    */
   transaction<T>(work: (transaction: SqlTransaction) => Promise<T>, options?: SqlTransactionOptions): Promise<T>;
   /**
    * The application's transaction object (Drizzle's `tx`, a TypeORM `EntityManager`, a Prisma transaction client, a
-   * Kysely `Transaction`, a node-postgres client after `BEGIN`), so statements run in it and commit or roll back with
-   * the application's own writes. Throws a `TypeError` for anything else, such as the database or pool itself.
+   * Kysely `Transaction`, a node-postgres client after `BEGIN`, a mysql2 connection after `START TRANSACTION`), so
+   * statements run in it and commit or roll back with the application's own writes. Throws a `TypeError` for anything
+   * else, such as the database or pool itself.
    */
   wrapTransaction(transaction: unknown): SqlTransaction;
 }

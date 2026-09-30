@@ -1,10 +1,10 @@
-import type { SqlExecutor, SqlIsolationLevel, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import type { SqlExecuteResult, SqlExecutor, SqlIsolationLevel, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
 import { describeValue, hasMethod, isolationSql } from '../../utils/executor.util.js';
 
 /** The part of a Kysely instance (or of a `Transaction`) the executor uses. */
 export interface KyselyLike {
   readonly isTransaction: boolean;
-  executeQuery(query: any): Promise<{ rows: any[] }>;
+  executeQuery(query: any): Promise<{ rows: any[]; numAffectedRows?: bigint }>;
   withoutPlugins(): KyselyLike;
   transaction(): { setIsolationLevel(level: SqlIsolationLevel): { execute<T>(work: (trx: any) => Promise<T>): Promise<T> }; execute<T>(work: (trx: any) => Promise<T>): Promise<T> };
 }
@@ -52,6 +52,10 @@ class KyselyExecutor implements SqlExecutor {
     return run<R>(this.raw, text, params);
   }
 
+  execute(text: string, params: readonly unknown[] = []): Promise<SqlExecuteResult> {
+    return write(this.raw, text, params);
+  }
+
   async transaction<T>(work: (transaction: SqlTransaction) => Promise<T>, options: SqlTransactionOptions = {}): Promise<T> {
     const builder = this.db.transaction();
     const inTransaction = (trx: KyselyLike) => work(kyselyTransaction(trx));
@@ -82,14 +86,26 @@ class KyselyExecutor implements SqlExecutor {
 
 function kyselyTransaction(trx: KyselyLike): SqlTransaction {
   const raw = trx.withoutPlugins();
-  return { query: <R extends object>(text: string, params: readonly unknown[] = []) => run<R>(raw, text, params) };
+  return {
+    query: <R extends object>(text: string, params: readonly unknown[] = []) => run<R>(raw, text, params),
+    execute: (text: string, params: readonly unknown[] = []) => write(raw, text, params),
+  };
 }
 
 let kysely: Promise<typeof import('kysely')> | undefined;
 
-async function run<R extends object>(db: KyselyLike, text: string, params: readonly unknown[]): Promise<R[]> {
+async function send(db: KyselyLike, text: string, params: readonly unknown[]): Promise<{ rows: any[]; numAffectedRows?: bigint }> {
   const { CompiledQuery } = await (kysely ??= import('kysely'));
-  return (await db.executeQuery(CompiledQuery.raw(text, [...params]))).rows as R[];
+  return db.executeQuery(CompiledQuery.raw(text, [...params]));
+}
+
+async function run<R extends object>(db: KyselyLike, text: string, params: readonly unknown[]): Promise<R[]> {
+  return (await send(db, text, params)).rows as R[];
+}
+
+/** `numAffectedRows`: node-postgres's `rowCount` of an INSERT, UPDATE, DELETE or MERGE. */
+async function write(db: KyselyLike, text: string, params: readonly unknown[]): Promise<SqlExecuteResult> {
+  return { affectedRows: Number((await send(db, text, params)).numAffectedRows ?? 0) };
 }
 
 /** Kysely's adapters of other databases, by class name: an adapter of a known one is refused. */

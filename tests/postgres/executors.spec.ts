@@ -6,6 +6,7 @@
  */
 import { PrismaPg } from '@prisma/adapter-pg';
 import { CamelCasePlugin, Kysely, MysqlDialect, PostgresAdapter, PostgresDialect, SqliteDialect } from 'kysely';
+import mysql from 'mysql2/promise';
 import pg from 'pg';
 import { fromDrizzle, fromKysely, fromPg, fromPrisma, fromTypeOrm } from '../../lib/postgres/index.js';
 import { sqlExecutorContract } from '../../lib/testing/index.js';
@@ -64,8 +65,9 @@ describe.each(targets)('$name', ({ open, skip }) => {
     it(c.name, c.run);
   }
 
-  it('is a PostgreSQL executor, and says what to pass instead of the database, pool or client, or of anything else', () => {
+  it('is a PostgreSQL executor with execute(), and says what to pass instead of the database, pool or client, or of anything else', () => {
     expect(client.executor.dialect).toBe('postgres');
+    expect(typeof client.executor.execute).toBe('function');
     expect(() => client.executor.wrapTransaction(client.root)).toThrow(/^(Pass the .* not |The node-postgres client isn't in a transaction)/);
     expect(() => client.executor.wrapTransaction({})).toThrow(/^Pass the .* got an object\.$/);
   });
@@ -228,5 +230,25 @@ describe('fromKysely() and another database', () => {
       },
     });
     expect(fromKysely(custom as never).dialect).toBe('postgres');
+  });
+});
+
+describe('fromPg() and MySQL', () => {
+  it('refuses a mysql2 pool or connection, of the promise API or the callback one, and joins no mysql2 connection', async () => {
+    // Nothing connects: a mysql2 pool opens its connections at the first query.
+    const pool = mysql.createPool({ host: '127.0.0.1', port: 1, connectionLimit: 1 });
+    try {
+      const refusal =
+        "fromPg() takes a node-postgres Pool (or a connected Client), not a mysql2 pool or connection: a MySQL store takes that, through fromMysql2() from its package's /mysql subpath.";
+      expect(() => fromPg(pool as never)).toThrow(refusal);
+      expect(() => fromPg(pool.pool as never)).toThrow(refusal);
+
+      const executor = fromPg(new pg.Pool({ connectionString: 'postgres://nobody@127.0.0.1:1/none' }));
+      expect(() => executor.wrapTransaction(pool)).toThrow(
+        "Pass the node-postgres client your transaction runs on, not a mysql2 connection: the store's statements run on PostgreSQL.",
+      );
+    } finally {
+      await pool.end();
+    }
   });
 });

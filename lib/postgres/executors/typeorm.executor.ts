@@ -1,4 +1,4 @@
-import type { SqlExecutor, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import type { SqlExecuteResult, SqlExecutor, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
 import { describeValue, hasMethod, isolationSql } from '../../utils/executor.util.js';
 
 /** The part of a TypeORM `QueryRunner` the executor uses. */
@@ -68,6 +68,15 @@ class TypeOrmExecutor implements SqlExecutor {
     }
   }
 
+  async execute(text: string, params: readonly unknown[] = []): Promise<SqlExecuteResult> {
+    const runner = this.dataSource.createQueryRunner();
+    try {
+      return await write(runner, text, params);
+    } finally {
+      await runner.release();
+    }
+  }
+
   async transaction<T>(work: (transaction: SqlTransaction) => Promise<T>, options: SqlTransactionOptions = {}): Promise<T> {
     const inTransaction = (manager: TypeOrmEntityManagerLike) => work(runnerTransaction(manager.queryRunner!));
     return options.isolationLevel ? this.dataSource.transaction(isolationSql(options.isolationLevel), inTransaction) : this.dataSource.transaction(inTransaction);
@@ -92,13 +101,22 @@ class TypeOrmExecutor implements SqlExecutor {
 }
 
 function runnerTransaction(runner: TypeOrmQueryRunnerLike): SqlTransaction {
-  return { query: <R extends object>(text: string, params: readonly unknown[] = []) => run<R>(runner, text, params) };
+  return {
+    query: <R extends object>(text: string, params: readonly unknown[] = []) => run<R>(runner, text, params),
+    execute: (text: string, params: readonly unknown[] = []) => write(runner, text, params),
+  };
 }
 
 /** The structured result: a plain `query()` answers an UPDATE or DELETE with `[rows, count]`. */
 async function run<R extends object>(runner: TypeOrmQueryRunnerLike, text: string, params: readonly unknown[]): Promise<R[]> {
   const result = await runner.query(text, [...params], true);
   return (result?.records ?? []) as R[];
+}
+
+/** `affected`: node-postgres's `rowCount`. */
+async function write(runner: TypeOrmQueryRunnerLike, text: string, params: readonly unknown[]): Promise<SqlExecuteResult> {
+  const result = await runner.query(text, [...params], true);
+  return { affectedRows: result?.affected ?? 0 };
 }
 
 function isDataSource(value: unknown): value is TypeOrmDataSourceLike {

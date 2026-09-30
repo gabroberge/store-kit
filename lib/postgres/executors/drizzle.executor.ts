@@ -1,4 +1,4 @@
-import type { SqlExecutor, SqlIsolationLevel, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import type { SqlExecuteResult, SqlExecutor, SqlIsolationLevel, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
 import { describeValue, hasMethod, isolationSql } from '../../utils/executor.util.js';
 
 /** The part of a Drizzle PostgreSQL database (or its `tx`) the executor uses. */
@@ -44,6 +44,10 @@ class DrizzleExecutor implements SqlExecutor {
     return run<R>(this.db, text, params);
   }
 
+  execute(text: string, params: readonly unknown[] = []): Promise<SqlExecuteResult> {
+    return write(this.db, text, params);
+  }
+
   async transaction<T>(work: (transaction: SqlTransaction) => Promise<T>, options: SqlTransactionOptions = {}): Promise<T> {
     const config = options.isolationLevel ? { isolationLevel: options.isolationLevel } : undefined;
     if (config) {
@@ -65,13 +69,16 @@ class DrizzleExecutor implements SqlExecutor {
 }
 
 function drizzleTransaction(tx: DrizzleDatabaseLike): SqlTransaction {
-  return { query: <R extends object>(text: string, params: readonly unknown[] = []) => run<R>(tx, text, params) };
+  return {
+    query: <R extends object>(text: string, params: readonly unknown[] = []) => run<R>(tx, text, params),
+    execute: (text: string, params: readonly unknown[] = []) => write(tx, text, params),
+  };
 }
 
 let drizzleOrm: Promise<typeof import('drizzle-orm')> | undefined;
 
-/** Runs a `$1`-style statement through Drizzle's `sql`, a `sql.param()` per placeholder. */
-async function run<R extends object>(db: DrizzleDatabaseLike, text: string, params: readonly unknown[]): Promise<R[]> {
+/** Runs a `$1`-style statement through Drizzle's `sql`, a `sql.param()` per placeholder, and resolves to the driver's result. */
+async function send(db: DrizzleDatabaseLike, text: string, params: readonly unknown[]): Promise<unknown> {
   const { sql } = await (drizzleOrm ??= import('drizzle-orm'));
   const chunks = [];
   let last = 0;
@@ -80,10 +87,19 @@ async function run<R extends object>(db: DrizzleDatabaseLike, text: string, para
     last = match.index + match[0].length;
   }
   chunks.push(sql.raw(text.slice(last)));
+  return db.execute(sql.join(chunks));
+}
 
+async function run<R extends object>(db: DrizzleDatabaseLike, text: string, params: readonly unknown[]): Promise<R[]> {
   // node-postgres and PGlite results carry `rows`; postgres-js's are the rows.
-  const result = await db.execute(sql.join(chunks));
+  const result = await send(db, text, params);
   return (Array.isArray(result) ? result : (result as { rows: R[] }).rows) as R[];
+}
+
+async function write(db: DrizzleDatabaseLike, text: string, params: readonly unknown[]): Promise<SqlExecuteResult> {
+  // node-postgres counts in `rowCount`, PGlite in `affectedRows`, postgres-js in the rows' `count`.
+  const result = (await send(db, text, params)) as { rowCount?: number | null; affectedRows?: number; count?: number };
+  return { affectedRows: result.rowCount ?? result.affectedRows ?? result.count ?? 0 };
 }
 
 /** A Drizzle PostgreSQL database or transaction: `PgDatabase`, `PgliteDatabase`, `PgAsyncDatabase` (1.0)... */

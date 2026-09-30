@@ -24,11 +24,28 @@ export const POSTGRES_CASES: DialectCases = {
       const failure = await rejection(executor.query('SELECT 1 / 0'), 'query() of a failing statement');
       includes(messages(failure), 'division by zero', 'query() of a failing statement');
       equal(await executor.query("SELECT 'next'::text AS status"), [{ status: 'next' }], 'query() after a failed statement');
+
+      // execute() is optional in SqlExecutor; every executor of the kit has one.
+      if (executor.execute) {
+        const execute = executor.execute.bind(executor);
+        equal(await execute(`INSERT INTO ${table} (id, small_n) VALUES ($1::text, 1), ($2::text, 1)`, ['w1', 'w2']), { affectedRows: 2 }, 'execute() of an INSERT of two rows');
+        equal(
+          await execute(`UPDATE ${table} SET small_n = small_n WHERE id IN ($1::text, $2::text, $3::text)`, ['w1', 'w2', 'missing']),
+          { affectedRows: 2 },
+          'execute() of an UPDATE that matches two rows and changes nothing in them',
+        );
+        equal(await execute(`DELETE FROM ${table} WHERE id = $1::text`, ['w1']), { affectedRows: 1 }, 'execute() of a DELETE of one row');
+        equal(await execute(`DELETE FROM ${table} WHERE id = $1::text`, ['w1']), { affectedRows: 0 }, 'execute() of a DELETE of no rows');
+        await execute(`DELETE FROM ${table}`);
+      }
     },
 
     async transactions({ executor }, table) {
       const result = await executor.transaction(async (tx) => {
         await tx.query(`INSERT INTO ${table} (id) VALUES ($1::text)`, ['kept']);
+        if (executor.execute) {
+          equal(await tx.execute?.(`UPDATE ${table} SET note_text = $1::text WHERE id = $2::text`, ['in the transaction', 'kept']), { affectedRows: 1 }, "execute() in a transaction");
+        }
         return (await tx.query(`SELECT id FROM ${table} WHERE id = $1::text`, ['kept'])).length;
       });
       equal(result, 1, "a committed transaction's result");
@@ -94,6 +111,11 @@ export const POSTGRES_CASES: DialectCases = {
       includes(messages(rolledBack), failure.message, "the application's transaction that rejects");
       await transaction((tx) => executor.wrapTransaction(tx).query(`INSERT INTO ${table} (id) VALUES ($1::text)`, ['committed']));
       equal(await ids(executor, table), ['committed'], "the rows after the application's rollback and commit");
+      if (executor.execute) {
+        const written = await transaction((tx) => executor.wrapTransaction(tx).execute!(`DELETE FROM ${table} WHERE id = $1::text`, ['committed']));
+        equal(written, { affectedRows: 1 }, "execute() in the application's transaction");
+        equal(await ids(executor, table), [], "the rows after execute() in the application's transaction");
+      }
 
       const refused: Array<[string, unknown]> = [
         ["the application's database, pool or client", root],
