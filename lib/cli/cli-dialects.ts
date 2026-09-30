@@ -3,7 +3,7 @@ import type { SqlDialect } from '../schema/dialect.js';
 
 /** How the command line reaches a database of one dialect for `migrate` and `status`. */
 export interface CliDialect {
-  /** The package the application installs to reach it, loaded on use: `pg`. */
+  /** The package the application installs to reach it, loaded on use: `pg`, `mysql2`. */
   readonly driver: string;
   /** A connection on `url` for one command; `null` without `driver`. */
   open(url: string): Promise<{ executor: SqlExecutor; close(): Promise<void> } | null>;
@@ -21,5 +21,9 @@ export const CLI_DIALECTS: Readonly<Partial<Record<SqlDialect, CliDialect>>> = {
   postgres: {
     driver: 'pg',
     open: async (url) => (await import('../postgres/schema/cli-connection.js')).openPostgres(url),
+  },
+  mysql: {
+    driver: 'mysql2',
+    open: async (url) => (await import('../mysql/schema/cli-connection.js')).openMysql(url),
   },
 };

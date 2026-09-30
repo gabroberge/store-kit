@@ -7,9 +7,9 @@ import { CLI_DIALECTS, URL_SCHEMES } from './cli-dialects.js';
 /**
  * A package's command for its stores' schemas (`nest-outbox migrate|status|sql`), from a shell or a CI step: resolves
  * to the process's exit code. `migrate` and `status` reach the database of the URL's dialect (`postgres://`,
- * `postgresql://`) with its driver from the application's dependencies (`pg`); `sql` prints the SQL of `--dialect`
- * (default: the only one, or `postgres`) and needs no database. `schemas` holds one `StoreSchema` per dialect the
- * package's stores run on. A package's bin:
+ * `postgresql://`, `mysql://`) with its driver from the application's dependencies (`pg`, `mysql2`); `sql` prints the
+ * SQL of `--dialect` (default: the only one, or `postgres`) and needs no database. `schemas` holds one `StoreSchema`
+ * per dialect the package's stores run on (`[pgSchema, mysqlSchema]`). A package's bin:
  *
  * ```ts
  * #!/usr/bin/env node
@@ -104,17 +104,24 @@ export async function runStoreCli(schemas: readonly CliStoreSchema[], argv: read
 function usageOf(schemas: readonly CliStoreSchema[]): string {
   const [{ command, packageName, defaultSchema }] = schemas;
   const stores = schemas.map((schema) => `${schema.storeName}'s schema (${schema.packageName}/${schema.dialect}):`).join('\n');
+  // A PostgreSQL package's usage reads as it did before the kit knew MySQL.
+  const mysql = schemas.some((schema) => schema.dialect === 'mysql');
+  const postgres = schemas.some((schema) => schema.dialect === 'postgres');
+  const migrate = !mysql
+    ? "Apply the migrations the schema hasn't had yet (one transaction, under an advisory lock)"
+    : `Apply the migrations the schema hasn't had yet${postgres ? ' (PostgreSQL: one transaction, under an advisory lock;\n            MySQL: ' : ' ('}one statement at a time, under GET_LOCK(), resuming where a failed run stopped)`;
+  const urls = [...(postgres ? ['postgres://...'] : []), ...(mysql ? ['mysql://...'] : [])].join(' or ');
   return `Usage: ${command} <command> [options]
 
 ${stores}
 
-  migrate   Apply the migrations the schema hasn't had yet (one transaction, under an advisory lock)
+  migrate   ${migrate}
   status    Print the schema's version and the one this version of ${packageName} needs;
             exit with 1 while it is behind
   sql       Print the migrations' SQL, for your own migration tool (no database needed)
 
 Options:
-  --url <url>        The database (postgres://...). Default: $DATABASE_URL
+  --url <url>        The database (${urls}). Default: $DATABASE_URL
   --schema <name>    The store's schema. Default: ${defaultSchema}
   --from <version>   sql: the version to start from. Default: 0 (a new database)
   --to <version>     sql: the version to end at. Default: the latest
@@ -182,7 +189,7 @@ function dialectOfUrl(url: string, what: string, schemas: readonly CliStoreSchem
   return dialect;
 }
 
-/** The package's schema of `dialect`: a dialect the kit doesn't support yet, or the package has no store of, fails. */
+/** The package's schema of `dialect`: a dialect the package has no store of (yet) fails. */
 function pick(schemas: readonly CliStoreSchema[], dialect: SqlDialect): CliStoreSchema {
   const schema = schemas.find((candidate) => candidate.dialect === dialect);
   if (schema) {
@@ -191,11 +198,7 @@ function pick(schemas: readonly CliStoreSchema[], dialect: SqlDialect): CliStore
 
   const [{ command, packageName }] = schemas;
   const supported = schemas.map((candidate) => DIALECT_NAMES[candidate.dialect]).join(' and ');
-  throw new Error(
-    CLI_DIALECTS[dialect]
-      ? `${command}: ${packageName} has no ${DIALECT_NAMES[dialect]} store: its stores run on ${supported}.`
-      : `${command}: ${DIALECT_NAMES[dialect]} isn't supported yet: the stores of ${packageName} run on ${supported}.`,
-  );
+  throw new Error(`${command}: ${DIALECT_NAMES[dialect]} isn't supported yet: the stores of ${packageName} run on ${supported}.`);
 }
 
 function processIo(): StoreCliIo {

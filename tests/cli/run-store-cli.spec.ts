@@ -30,6 +30,28 @@ describe('runStoreCli()', () => {
     expect((await run(['sql', '--schema', 'bad-name'])).err).toContain('PostgresNoteStore: invalid schema "bad-name".');
   });
 
+  it("prints a PostgreSQL package's usage word for word as it did before the kit knew MySQL", async () => {
+    expect((await run(['--help'])).out).toBe(`Usage: nest-notes <command> [options]
+
+PostgresNoteStore's schema (@nestjs/notes/postgres):
+
+  migrate   Apply the migrations the schema hasn't had yet (one transaction, under an advisory lock)
+  status    Print the schema's version and the one this version of @nestjs/notes needs;
+            exit with 1 while it is behind
+  sql       Print the migrations' SQL, for your own migration tool (no database needed)
+
+Options:
+  --url <url>        The database (postgres://...). Default: $DATABASE_URL
+  --schema <name>    The store's schema. Default: nest_notes
+  --from <version>   sql: the version to start from. Default: 0 (a new database)
+  --to <version>     sql: the version to end at. Default: the latest
+  --dialect <name>   sql: the database it's for (postgres). Default: postgres
+  --statement-breakpoints
+                     sql: separate the statements with drizzle-kit's "--> statement-breakpoint",
+                     for a custom drizzle-kit migration (drizzle-kit generate --custom)
+`);
+  });
+
   it('prints its usage for --help, and on stderr, exiting with 1, for no command, an unknown one or an unknown option', async () => {
     const help = await run(['--help']);
     expect(help).toMatchObject({ code: 0, err: '' });
