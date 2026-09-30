@@ -18,8 +18,9 @@ import { onMysql, recording, testDatabase } from './support.js';
 const { database, reason } = await testDatabase('readiness');
 const pools: mysql.Pool[] = [];
 
-afterAll(async () => {
-  await Promise.all(pools.map((pool) => pool.end()));
+// Each test's pools end with it: the server may be shared, and a file's pools would otherwise add up.
+afterEach(async () => {
+  await Promise.all(pools.splice(0).map((pool) => pool.end()));
 });
 
 const pool = (options: mysql.PoolOptions = {}) => {
