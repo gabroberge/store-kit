@@ -1,0 +1,109 @@
+<p align="center">
+  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
+</p>
+
+[travis-image]: https://api.travis-ci.org/nestjs/nest.svg?branch=master
+[travis-url]: https://travis-ci.org/nestjs/nest
+[linux-image]: https://img.shields.io/travis/nestjs/nest/master.svg?label=linux
+[linux-url]: https://travis-ci.org/nestjs/nest
+
+  <p align="center">A progressive <a href="http://nodejs.org" target="blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
+    <p align="center">
+<a href="https://www.npmjs.com/~nestjscore"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
+<a href="https://www.npmjs.com/~nestjscore"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
+<a href="https://www.npmjs.com/~nestjscore"><img src="https://img.shields.io/npm/dm/@nestjs/core.svg" alt="NPM Downloads" /></a>
+<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
+<a href="https://opencollective.com/nest#backer"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
+<a href="https://opencollective.com/nest#sponsor"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
+  <a href="https://paypal.me/kamilmysliwiec"><img src="https://img.shields.io/badge/Donate-PayPal-dc3d53.svg"/></a>
+  <a href="https://twitter.com/nestframework"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow"></a>
+</p>
+  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
+  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+
+## Description
+
+The building blocks of the first-party SQL stores that [Nest](https://github.com/nestjs/nest)'s packages ship (`PostgresWorkflowStore` in `@nestjs/workflows/postgres`, and more to come): executors that run a store's SQL through the client the application already has (node-postgres, Drizzle, TypeORM, Prisma, Kysely) and join its transactions, a store's versioned migrations with their SQL and its command line, the readiness a store awaits before its statements, and helpers for writing them.
+
+Applications don't install or import it: a package depends on it, and its `/postgres` subpath re-exports the executors and their types.
+
+## Installation
+
+For a package that ships a store, as a regular dependency (never a peer, so the kit's patch releases dedupe across an application's packages):
+
+```bash
+$ npm i --save @nestjs/store-kit
+```
+
+## Entries
+
+- `@nestjs/store-kit`: what every dialect shares: the executor types (`SqlExecutor`, `SqlTransaction`, `SqlTransactionOptions`, `SqlIsolationLevel`) and `runStoreCli()`, a package's command.
+- `@nestjs/store-kit/postgres`: the executors (`fromPg`, `fromDrizzle`, `fromTypeOrm`, `fromPrisma`, `fromKysely`), `StoreSchema` (migrations, their SQL, a store's options and readiness), the statement helpers (`SqlParams`, `columns`, `toText`/`toInt`/`toBool`/`toJson`, `quoteSchema`, `advisoryLock`) and `assertReadCommittedTransaction()`.
+- `@nestjs/store-kit/testing`: `sqlExecutorContract()`, for an executor of another client.
+
+## A store in brief
+
+```ts
+export const outboxSchema = new StoreSchema({
+  packageName: '@nestjs/outbox',
+  storeName: 'PostgresOutboxStore',
+  command: 'nest-outbox',
+  defaultSchema: 'nest_outbox',
+  migrations: [initialMigration], // { version: 1, name: 'initial', up: (s) => [`CREATE TABLE ${s}.messages (...)`] }
+  createError: (message, details) => new OutboxSchemaError(message, details),
+});
+
+export class PostgresOutboxStore implements OutboxStore, OnModuleInit {
+  static migrationSql(options?: MigrationSqlOptions): string {
+    return outboxSchema.sql(options);
+  }
+
+  static readonly schemaVersion = outboxSchema.latest;
+
+  private readonly executor: SqlExecutor;
+  private readonly readiness: StoreReadiness;
+
+  constructor(options: PostgresOutboxStoreOptions, storage?: OutboxStorage) {
+    const resolved = outboxSchema.resolveOptions(options); // { executor, schema, migrate }, checked
+    this.executor = resolved.executor;
+    this.readiness = outboxSchema.readiness({ ...resolved, logger: new Logger('OutboxModule') });
+    storage?.registerSource({ messages: this, inbox: this });
+  }
+
+  onModuleInit(): Promise<void> {
+    return this.readiness.ready(); // migrates (or checks) the schema before the workers start
+  }
+
+  migrate(): Promise<number[]> {
+    return this.readiness.migrate();
+  }
+}
+```
+
+The package's bin (`nest-outbox migrate|status|sql`):
+
+```ts
+#!/usr/bin/env node
+import { runStoreCli } from '@nestjs/store-kit';
+import { outboxSchema } from './outbox.schema.js';
+
+process.exitCode = await runStoreCli([outboxSchema], process.argv.slice(2));
+```
+
+## Tests
+
+`npm run test:e2e` runs the suite on PGlite, and on PostgreSQL through every executor: `SQL_TEST_PG_URL` (`docker compose up -d` starts one on port 55432), else a throwaway cluster from local PostgreSQL binaries, else those tests are skipped with the reason. Test databases are named `skit_<host>_...` and swept when their process is gone.
+
+## Support
+
+Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+
+## Stay in touch
+
+- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
+- Website - [https://nestjs.com](https://nestjs.com/)
+- Twitter - [@nestframework](https://twitter.com/nestframework)
+
+## License
+
+Nest is [MIT licensed](LICENSE).

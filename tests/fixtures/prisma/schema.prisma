@@ -1,0 +1,16 @@
+generator client {
+  provider = "prisma-client"
+  output   = "./generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// The application's table: tests/postgres writes it in the application's transactions the executors join.
+model Order {
+  id     String @id
+  status String
+
+  @@map("orders")
+}
