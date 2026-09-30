@@ -5,3 +5,6 @@
 // Executors: a store's SQL through the application's pool or ORM, and its transactions
 export { fromDrizzle, fromKysely, fromPg, fromPrisma, fromTypeOrm, type PrismaExecutorOptions } from './executors/index.js';
 export type { SqlExecutor, SqlIsolationLevel, SqlTransaction, SqlTransactionOptions } from '../interfaces/index.js';
+
+// A store's statements: parameters as text with casts, columns read as text, the schema quoted, advisory locks
+export { advisoryLock, columns, quoteSchema, SqlParams, toBool, toInt, toJson, toText } from './sql/index.js';
