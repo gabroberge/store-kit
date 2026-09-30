@@ -131,7 +131,7 @@ describe('advisoryLock()', () => {
     await writer.done;
   });
 
-  it('takes several keys one after another in sorted order, each once', async () => {
+  it('takes one key as it always did, and several in one statement, ordered and deduplicated by their lock numbers', async () => {
     const taken: unknown[] = [];
     const tx: SqlTransaction = {
       query: async (text, params) => {
@@ -139,13 +139,112 @@ describe('advisoryLock()', () => {
         return [];
       },
     };
-    await advisoryLock(tx, ['k:b', 'k:a', 'k:b', 'k:c']);
     await advisoryLock(tx, 'k:z', { shared: true });
+    await advisoryLock(tx, ['k:b', 'k:a', 'k:b', 'k:c']);
+    await advisoryLock(tx, ['k:only', 'k:only']);
+    await advisoryLock(tx, []);
+    await advisoryLock(tx, 'k:y', { namespace: 'ns' });
+    await advisoryLock(tx, ['k:b', 'k:a'], { namespace: 'ns', shared: true });
     expect(taken).toEqual([
-      ['SELECT pg_advisory_xact_lock(hashtext($1::text))::text AS locked', 'k:a'],
-      ['SELECT pg_advisory_xact_lock(hashtext($1::text))::text AS locked', 'k:b'],
-      ['SELECT pg_advisory_xact_lock(hashtext($1::text))::text AS locked', 'k:c'],
       ['SELECT pg_advisory_xact_lock_shared(hashtext($1::text))::text AS locked', 'k:z'],
+      [
+        'SELECT pg_advisory_xact_lock(k.h)::text AS locked\nFROM (SELECT DISTINCT hashtext(t.key) AS h FROM jsonb_array_elements_text($1::text::jsonb) AS t(key)) AS k\nORDER BY k.h',
+        '["k:b","k:a","k:c"]',
+      ],
+      ['SELECT pg_advisory_xact_lock(hashtext($1::text))::text AS locked', 'k:only'],
+      ['SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))::text AS locked', 'ns', 'k:y'],
+      [
+        'SELECT pg_advisory_xact_lock_shared(hashtext($2::text), k.h)::text AS locked\nFROM (SELECT DISTINCT hashtext(t.key) AS h FROM jsonb_array_elements_text($1::text::jsonb) AS t(key)) AS k\nORDER BY k.h',
+        '["k:b","k:a"]',
+        'ns',
+      ],
     ]);
+    await expect(advisoryLock(tx, 'k', { namespace: 42 as never })).rejects.toThrow('advisoryLock() takes a string namespace, not 42.');
+  });
+
+  it("can't deadlock through keys whose hashes collide, where taking them one by one in their text's order did", async () => {
+    // Keys whose hashtext() collide: two texts, one lock. Taken in the texts' order, two transactions can take the
+    // same two locks in opposite orders.
+    const { rows: pairs } = await pool.query<{ keys: string[] }>(
+      "SELECT array_agg(k ORDER BY k) AS keys FROM (SELECT 'key:' || g AS k FROM generate_series(1, 300000) g) s GROUP BY hashtext(k) HAVING count(*) = 2",
+    );
+    const opposite = findOpposite(pairs.map((pair) => pair.keys as [string, string]));
+    expect(opposite).toBeDefined();
+    const [first, second] = opposite!;
+
+    // The old way, one statement per key in the texts' order, with both transactions past their first lock: a deadlock.
+    const byText = async (tx: SqlTransaction, keys: string[], between: () => Promise<void>) => {
+      const [one, two] = [...new Set(keys)].sort();
+      await tx.query('SELECT pg_advisory_xact_lock(hashtext($1::text))::text AS locked', [one]);
+      await between();
+      await tx.query('SELECT pg_advisory_xact_lock(hashtext($1::text))::text AS locked', [two]);
+    };
+    const bothFirst = barrier(2);
+    const outcomes = await Promise.allSettled([
+      fromPg(pool).transaction((tx) => byText(tx, first, bothFirst)),
+      fromPg(pool).transaction((tx) => byText(tx, second, bothFirst)),
+    ]);
+    expect(outcomes.map((outcome) => (outcome.status === 'rejected' ? (outcome.reason as Error).message : 'done')).sort()).toEqual(['deadlock detected', 'done']);
+
+    // advisoryLock() orders them by their lock numbers: many transactions at once, in opposite argument orders.
+    await Promise.all(
+      Array.from({ length: 12 }, (_, i) =>
+        fromPg(pool).transaction(async (tx) => {
+          await advisoryLock(tx, i % 2 === 0 ? first : [...second].reverse());
+          await new Promise((resolve) => setTimeout(resolve, Math.random() * 5));
+        }),
+      ),
+    );
+  });
+
+  it("takes a namespace's locks in PostgreSQL's two-key space, apart from the one-key form's and other namespaces'", async () => {
+    const outer = await pool.connect();
+    try {
+      await outer.query('BEGIN');
+      await advisoryLock(fromPg(pool).wrapTransaction(outer), ['k:1', 'k:2'], { namespace: 'orders' });
+      const tryLock = async (sql: string, params: string[]) =>
+        fromPg(pool).transaction(async (tx) => (await tx.query<{ got: string }>(sql, params))[0]!.got);
+      expect(await tryLock('SELECT pg_try_advisory_xact_lock(hashtext($1::text), hashtext($2::text))::text AS got', ['orders', 'k:1'])).toBe('false');
+      expect(await tryLock('SELECT pg_try_advisory_xact_lock(hashtext($1::text), hashtext($2::text))::text AS got', ['payments', 'k:1'])).toBe('true');
+      expect(await tryLock('SELECT pg_try_advisory_xact_lock(hashtext($1::text))::text AS got', ['k:1'])).toBe('true');
+      await outer.query('COMMIT');
+    } finally {
+      outer.release();
+    }
   });
 });
+
+/** Two transactions' keys, one of each colliding pair each, whose texts' order takes the two locks in opposite orders. */
+function findOpposite(pairs: Array<[string, string]>): [string[], string[]] | undefined {
+  for (const [i, left] of pairs.entries()) {
+    for (const right of pairs.slice(i + 1)) {
+      for (const [x, z] of [left, [...left].reverse()]) {
+        for (const [y, w] of [right, [...right].reverse()]) {
+          // The first of each by text: x's lock (left's) or y's (right's), and z's or w's.
+          if (x! < y! !== z! < w!) {
+            return [
+              [x!, y!],
+              [z!, w!],
+            ];
+          }
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Resolves for everyone once `count` have called it. */
+function barrier(count: number): () => Promise<void> {
+  let arrived = 0;
+  let open!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return () => {
+    if (++arrived === count) {
+      open();
+    }
+    return opened;
+  };
+}

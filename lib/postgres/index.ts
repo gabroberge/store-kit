@@ -21,7 +21,7 @@ export type {
 } from '../interfaces/index.js';
 
 // A store's statements: parameters as text with casts, columns read as text, the schema quoted, advisory locks
-export { advisoryLock, columns, quoteSchema, SqlParams, toBool, toInt, toJson, toText } from './sql/index.js';
+export { advisoryLock, columns, quoteSchema, SqlParams, toBool, toInt, toJson, toText, type AdvisoryLockOptions } from './sql/index.js';
 
 // Isolation: the application's transaction a store method joins must be READ COMMITTED
 export { assertReadCommittedTransaction } from './isolation/index.js';
