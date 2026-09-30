@@ -200,9 +200,11 @@ export class StoreSchema {
   /**
    * The store's `executor`, `schema` and `migrate` options, checked with messages that name the store (an executor of
    * another dialect included) and defaulted: `defaultSchema`, and `migrate` on except when `NODE_ENV` is `production`.
+   * It takes an executor of either dialect, to refuse the other at run time, and resolves to a PostgreSQL one.
    */
-  resolveOptions(options: StoreOptions): ResolvedStoreOptions {
-    return resolveStoreOptions(this, POSTGRES, options);
+  resolveOptions(options: StoreOptions): ResolvedStoreOptions<'postgres'> {
+    // Its dialect checked: a PostgreSQL executor.
+    return resolveStoreOptions(this, POSTGRES, options) as ResolvedStoreOptions<'postgres'>;
   }
 
   /**

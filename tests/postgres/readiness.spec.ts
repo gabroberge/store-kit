@@ -7,6 +7,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
 import pg from 'pg';
+import type { SqlExecutor as AnySqlExecutor } from '../../lib/index.js';
 import { fromDrizzle, fromPg, type SqlExecutor } from '../../lib/postgres/index.js';
 import { endPool } from '../support/postgres.js';
 import { NoteSchemaError, noteSchema } from '../fixtures/notes/note.schema.js';
@@ -53,11 +54,11 @@ describe('StoreSchema.resolveOptions()', () => {
     );
     expect(() => noteSchema.resolveOptions(undefined as never)).toThrow('PostgresNoteStore: `executor` must be a SqlExecutor');
 
-    const mysql = { ...executor, dialect: 'mysql', query: executor.query, transaction: executor.transaction, wrapTransaction: executor.wrapTransaction } as SqlExecutor;
+    const mysql = { ...executor, dialect: 'mysql', query: executor.query, transaction: executor.transaction, wrapTransaction: executor.wrapTransaction } as AnySqlExecutor;
     expect(() => noteSchema.resolveOptions({ executor: mysql })).toThrow(
       "PostgresNoteStore runs on PostgreSQL, and `executor` is a MySQL executor: import the executor from '@nestjs/notes/postgres' (fromPg, fromDrizzle, fromTypeOrm, fromPrisma or fromKysely).",
     );
-    const unmarked = { query: executor.query, transaction: executor.transaction, wrapTransaction: executor.wrapTransaction } as SqlExecutor;
+    const unmarked = { query: executor.query, transaction: executor.transaction, wrapTransaction: executor.wrapTransaction } as AnySqlExecutor;
     expect(() => noteSchema.resolveOptions({ executor: unmarked })).toThrow(
       "PostgresNoteStore: `executor` doesn't say which database it runs on: a SqlExecutor has a `dialect` ('postgres' for PostgreSQL).",
     );

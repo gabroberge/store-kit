@@ -36,7 +36,7 @@ export interface StoreOptions extends AnyStoreOptions<'mysql'> {
  * const { executor, schema, migrate } = outboxSchema.resolveOptions(options);
  * ```
  */
-export interface ResolvedStoreOptions extends AnyResolvedStoreOptions {
+export interface ResolvedStoreOptions extends AnyResolvedStoreOptions<'mysql'> {
   executor: SqlExecutor;
   /** The schema's name, checked: name the store's tables with `quoteTable(schema, 'messages', storeName)`. */
   schema: string;
@@ -49,7 +49,7 @@ export interface ResolvedStoreOptions extends AnyResolvedStoreOptions {
  * this.readiness = outboxSchema.readiness({ ...outboxSchema.resolveOptions(options), logger: this.logger });
  * ```
  */
-export interface StoreReadinessOptions extends AnyStoreReadinessOptions {
+export interface StoreReadinessOptions extends AnyStoreReadinessOptions<'mysql'> {
   executor: SqlExecutor;
 }
 

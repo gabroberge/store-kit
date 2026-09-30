@@ -35,14 +35,15 @@ export interface StoreOptions<D extends SqlDialect = SqlDialect> {
 }
 
 /**
- * `StoreSchema.resolveOptions()`'s result: the options checked, with their defaults.
+ * `StoreSchema.resolveOptions()`'s result: the options checked, with their defaults. `D` is the store's dialect: each
+ * dialect's `StoreSchema` resolves to its own (`ResolvedStoreOptions<'postgres'>`), having checked the executor's.
  *
  * ```ts
  * const { executor, schema, migrate } = outboxSchema.resolveOptions(options);
  * ```
  */
-export interface ResolvedStoreOptions {
-  executor: SqlExecutor;
+export interface ResolvedStoreOptions<D extends SqlDialect = SqlDialect> {
+  executor: SqlExecutor<D>;
   /** The schema's name, checked (quote it with the dialect's `quoteSchema()`). */
   schema: string;
   migrate: boolean;

@@ -89,8 +89,9 @@ export interface SqlTransaction {
  *
  * `D` is its dialect: `fromPg()` and the rest of `/postgres` return a `SqlExecutor<'postgres'>`, the executors of
  * `/mysql` a `SqlExecutor<'mysql'>`, so a store's options that take `SqlExecutor<'postgres'>` refuse a MySQL executor
- * when the application compiles, before the store refuses it at run time. `SqlExecutor` alone is an executor of either
- * dialect.
+ * when the application compiles, before the store refuses it at run time. Each dialect's entry exports its own as
+ * `SqlExecutor` (and a package's `/postgres` and `/mysql` re-export it): annotated with it, an executor fits that
+ * dialect's stores. Here, at the root, `SqlExecutor` alone is an executor of either dialect, for code that serves both.
  *
  * ```ts
  * export interface PostgresOutboxStoreOptions {

@@ -1,14 +1,15 @@
-import type { SqlTransaction } from './sql-executor.interface.js';
+import type { SqlDialect, SqlTransaction } from './sql-executor.interface.js';
 import type { ResolvedStoreOptions } from './store-options.interface.js';
 
 /**
- * What `StoreSchema.readiness()` takes: the store's resolved options, and where a migration is reported.
+ * What `StoreSchema.readiness()` takes: the store's resolved options, and where a migration is reported. `D` is the
+ * store's dialect, as in `ResolvedStoreOptions`.
  *
  * ```ts
  * this.readiness = outboxSchema.readiness({ ...outboxSchema.resolveOptions(options), logger: this.logger });
  * ```
  */
-export interface StoreReadinessOptions extends ResolvedStoreOptions {
+export interface StoreReadinessOptions<D extends SqlDialect = SqlDialect> extends ResolvedStoreOptions<D> {
   /**
    * Told when the store applies migrations (`PostgresOutboxStore: migrated schema "nest_outbox" to version 2.`): the
    * store's Nest `Logger`, typically.
