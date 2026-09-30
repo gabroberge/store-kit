@@ -46,6 +46,7 @@ const broken = (overrides: Partial<SqlExecutor>): SqlExecutor => {
   return {
     dialect: base.dialect,
     query: (text, params) => base.query(text, params),
+    execute: (text, params) => base.execute!(text, params),
     transaction: (work, options) => base.transaction(work, options),
     wrapTransaction: (transaction) => base.wrapTransaction(transaction),
     ...overrides,
@@ -53,13 +54,18 @@ const broken = (overrides: Partial<SqlExecutor>): SqlExecutor => {
 };
 
 describe('sqlExecutorContract()', () => {
-  it('passes a correct executor, and covers postgres executors only for now', async () => {
+  it('passes a correct executor, and covers postgres and mysql executors', async () => {
     for (const name of Object.values(CASE)) {
       expect(await outcome(client!.executor, name)).toBeNull();
     }
-    expect((await outcome({ ...broken({}), dialect: 'mysql' }, CASE.statements))?.message).toBe(
-      'sqlExecutorContract() covers postgres executors; this one\'s dialect is "mysql".',
+    expect((await outcome({ ...broken({}), dialect: 'oracle' as never }, CASE.statements))?.message).toBe(
+      'sqlExecutorContract() covers postgres and mysql executors; this one\'s dialect is "oracle".',
     );
+  });
+
+  it('fails an executor whose execute() counts other rows than a statement wrote', async () => {
+    const executor = broken({ execute: async (text, params) => ({ affectedRows: (await client!.executor.execute!(text, params)).affectedRows + 1 }) });
+    expect((await outcome(executor, CASE.statements))?.message).toMatch(/^execute\(\) of an INSERT of two rows: expected \{"affectedRows":2\}, got \{"affectedRows":3\}/);
   });
 
   it('fails an executor that ignores the isolation level asked for', async () => {

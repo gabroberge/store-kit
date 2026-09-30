@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { SqlExecutor } from '../interfaces/sql-executor.interface.js';
 import { show } from './assertions.js';
+import { MYSQL_CASES } from './mysql-executor.cases.js';
 import { POSTGRES_CASES } from './postgres-executor.cases.js';
 
 /**
@@ -71,15 +72,19 @@ export interface DialectCases {
 /** The dialects the contract covers, by an executor's `dialect`. */
 const DIALECTS: Partial<Record<SqlExecutor['dialect'], DialectCases>> = {
   postgres: POSTGRES_CASES,
+  mysql: MYSQL_CASES,
 };
 
 /**
  * The `SqlExecutor` contract as test cases, for any test runner: what an executor for a client the kit doesn't cover
- * (MikroORM, postgres.js...) must do. Statements with their parameters, transactions that commit and roll back,
- * isolation levels, joining the application's transaction (and refusing its pool or database), transactions that keep
- * to one connection while others run at once, and values that round-trip through `SqlParams` and `columns()`.
- * `createTarget` is called once per case; each case creates a table of its own in the connection's default schema, and
- * drops it. The cases run in the SQL of the executor's `dialect`.
+ * (MikroORM, postgres.js...) must do. Statements with their parameters, the rows `execute()` counts (required on
+ * MySQL, checked where present on PostgreSQL), transactions that commit and roll back, isolation levels, joining the
+ * application's transaction (and refusing its pool or database), transactions that keep to one connection while
+ * others run at once, and values that round-trip through `SqlParams` and `columns()`. `createTarget` is called once per
+ * case; each case creates a table of its own in the connection's default schema (MySQL: its database), and drops it.
+ * The cases run in the SQL of the executor's `dialect`. On MySQL, the isolation and connection cases read
+ * `performance_schema.events_transactions_current` (a transaction's own level is in no variable): the test user needs
+ * SELECT on `performance_schema`, which is on by default.
  *
  * ```ts
  * const cases = sqlExecutorContract(async () => ({
@@ -104,7 +109,7 @@ export function sqlExecutorContract(
         const dialect = DIALECTS[target.executor?.dialect];
         if (!dialect) {
           throw new Error(
-            `sqlExecutorContract() covers ${Object.keys(DIALECTS).join(', ')} executors; this one's dialect is ${show(target.executor?.dialect)}.`,
+            `sqlExecutorContract() covers ${Object.keys(DIALECTS).join(' and ')} executors; this one's dialect is ${show(target.executor?.dialect)}.`,
           );
         }
 
