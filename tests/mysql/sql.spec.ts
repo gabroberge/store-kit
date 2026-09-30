@@ -198,30 +198,62 @@ describe('lockKeys()', () => {
     expect(row).toEqual({ n: 1 });
   });
 
-  it('takes several keys one after another in sorted order, each once: ensure the row, then lock it', async () => {
+  it('takes several keys in two statements, ordered and deduplicated by their rows (the keys\' SHA-256), and shared ones one by one in that order', async () => {
     const taken: unknown[] = [];
     const tx: SqlTransaction = {
       query: async <R extends object>(text: string, params?: readonly unknown[]) => {
         taken.push([text, ...(params ?? [])]);
-        return (text.includes('FOR SHARE') ? [{ id: 'held' }] : []) as R[];
+        return (text.includes('FOR SHARE') && params?.[0] === hash('k:held') ? [{ id: 'held' }] : []) as R[];
       },
       execute: async (text, params) => {
         taken.push([text, ...(params ?? [])]);
         return { affectedRows: 1 };
       },
     };
-    await lockKeys(tx, 'nest_notes', ['k:b', 'k:a', 'k:b']);
-    await lockKeys(tx, 'nest_notes', 'k:z', { shared: true });
-    const hash = (key: string) => createHash('sha256').update(key).digest('hex');
+    const ordered = ['k:b', 'k:a', 'k:c'].map(hash).sort();
+    await lockKeys(tx, 'nest_notes', ['k:b', 'k:a', 'k:b', 'k:c']);
     expect(taken).toEqual([
-      ['INSERT INTO `nest_notes_locks` (id) VALUES (?) ON DUPLICATE KEY UPDATE id = id', hash('k:a')],
-      ['SELECT id FROM `nest_notes_locks` WHERE id = ? FOR UPDATE', hash('k:a')],
-      ['INSERT INTO `nest_notes_locks` (id) VALUES (?) ON DUPLICATE KEY UPDATE id = id', hash('k:b')],
-      ['SELECT id FROM `nest_notes_locks` WHERE id = ? FOR UPDATE', hash('k:b')],
-      ['SELECT id FROM `nest_notes_locks` WHERE id = ? FOR SHARE', hash('k:z')],
+      ['INSERT INTO `nest_notes_locks` (id) VALUES (?), (?), (?) ON DUPLICATE KEY UPDATE id = id', ...ordered],
+      ['SELECT id FROM `nest_notes_locks` WHERE id IN (?, ?, ?) ORDER BY id FOR UPDATE', ...ordered],
+    ]);
+
+    taken.length = 0;
+    await lockKeys(tx, 'nest_notes', []);
+    await lockKeys(tx, 'nest_notes', ['k:held', 'k:new'], { shared: true });
+    const [first, second] = ['k:held', 'k:new'].map(hash).sort();
+    const newest = hash('k:new');
+    expect(taken).toEqual([
+      ['SELECT id FROM `nest_notes_locks` WHERE id = ? FOR SHARE', first],
+      ...(first === newest
+        ? [
+            ['INSERT INTO `nest_notes_locks` (id) VALUES (?) ON DUPLICATE KEY UPDATE id = id', first],
+            ['SELECT id FROM `nest_notes_locks` WHERE id IN (?) ORDER BY id FOR UPDATE', first],
+          ]
+        : []),
+      ['SELECT id FROM `nest_notes_locks` WHERE id = ? FOR SHARE', second],
+      ...(second === newest
+        ? [
+            ['INSERT INTO `nest_notes_locks` (id) VALUES (?) ON DUPLICATE KEY UPDATE id = id', second],
+            ['SELECT id FROM `nest_notes_locks` WHERE id IN (?) ORDER BY id FOR UPDATE', second],
+          ]
+        : []),
     ]);
   });
+
+  it("can't deadlock: many transactions lock overlapping keys at once, in opposite argument orders", async () => {
+    const keys = Array.from({ length: 6 }, (_, i) => `many:${i}`);
+    await Promise.all(
+      Array.from({ length: 12 }, (_, i) =>
+        executor.transaction(async (tx) => {
+          await lockKeys(tx, 'sql_locks', i % 2 === 0 ? keys : [...keys].reverse(), { shared: i % 3 === 0 });
+          await new Promise((resolve) => setTimeout(resolve, Math.random() * 5));
+        }, { isolationLevel: 'read committed' }),
+      ),
+    );
+  });
 });
+
+const hash = (key: string) => createHash('sha256').update(key).digest('hex');
 
 describe.each(clients)('retryOnDeadlock() through $name', (factory) => {
   onMysql(reason);
