@@ -13,7 +13,7 @@ import mysqlCallbacks from 'mysql2';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
 import { DataSource } from 'typeorm';
-import { fromDrizzle, fromKysely, fromMysql2, fromPrisma, fromTypeOrm, mysqlErrorCode } from '../../lib/mysql/index.js';
+import { fromDrizzle, fromKysely, fromMysql2, fromPrisma, fromTypeOrm, lockKeys, mysqlErrorCode } from '../../lib/mysql/index.js';
 import { fromDrizzle as fromPgDrizzle, fromKysely as fromPgKysely, fromTypeOrm as fromPgTypeOrm } from '../../lib/postgres/index.js';
 import { sqlExecutorContract } from '../../lib/testing/index.js';
 import { PrismaClient } from '../fixtures/prisma-mysql/generated/client.js';
@@ -52,6 +52,16 @@ describe.each(targets)('$name', ({ open }) => {
     );
     await expect(client.executor.execute("UPDATE orders SET status = 'what?' WHERE id = ?", ['o-1'])).rejects.toThrow('this one has 2 placeholders and 1 param');
     await expect(client.executor.query('SELECT ?? FROM orders', ['id'])).rejects.toThrow("A MySQL statement can't hold ??");
+  });
+
+  it('locks keys through this client: several exclusive ones in two statements, and shared ones', async () => {
+    const schema = `lk${targets.findIndex((target) => target.name === `${client.name} on MySQL`)}`;
+    await client.executor.execute(`CREATE TABLE IF NOT EXISTS ${schema}_locks (id char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY)`);
+    await client.executor.transaction(async (tx) => {
+      await lockKeys(tx, schema, ['k:b', 'k:a', 'k:b']);
+      await lockKeys(tx, schema, ['k:a', 'k:c'], { shared: true });
+    });
+    expect(await client.executor.query(`SELECT CAST(COUNT(*) AS CHAR) AS n FROM ${schema}_locks`)).toEqual([{ n: '3' }]);
   });
 
   it("reads an AUTO_INCREMENT id with LAST_INSERT_ID() in the insert's transaction, which keeps to its connection", async () => {

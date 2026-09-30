@@ -8,7 +8,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { CamelCasePlugin, Kysely, MysqlDialect, PostgresAdapter, PostgresDialect, SqliteDialect } from 'kysely';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
-import { fromDrizzle, fromKysely, fromPg, fromPrisma, fromTypeOrm } from '../../lib/postgres/index.js';
+import { advisoryLock, fromDrizzle, fromKysely, fromPg, fromPrisma, fromTypeOrm } from '../../lib/postgres/index.js';
 import { sqlExecutorContract } from '../../lib/testing/index.js';
 import { PrismaClient } from '../fixtures/prisma/generated/client.js';
 import { endPool } from '../support/postgres.js';
@@ -64,6 +64,16 @@ describe.each(targets)('$name', ({ open, skip }) => {
   for (const c of sqlExecutorContract(() => ({ executor: client.executor, transaction: (work) => client.transaction(work), root: client.root }))) {
     it(c.name, c.run);
   }
+
+  it('takes advisory locks through this client: one key, several in one statement, and in a namespace', async () => {
+    const taken = await client.executor.transaction(async (tx) => {
+      await advisoryLock(tx, '@nestjs/notes:s:one');
+      await advisoryLock(tx, ['@nestjs/notes:s:b', '@nestjs/notes:s:a', '@nestjs/notes:s:b'], { shared: true });
+      await advisoryLock(tx, ['k:1', 'k:2'], { namespace: '@nestjs/notes:s:key' });
+      return (await tx.query<{ n: string }>("SELECT count(*)::text AS n FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()"))[0]!.n;
+    });
+    expect(taken).toBe('5');
+  });
 
   it('is a PostgreSQL executor with execute(), and says what to pass instead of the database, pool or client, or of anything else', () => {
     expect(client.executor.dialect).toBe('postgres');
