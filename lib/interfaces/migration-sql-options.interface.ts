@@ -6,7 +6,10 @@
  * ```
  */
 export interface MigrationStatementsOptions {
-  /** The PostgreSQL schema. Default: the store's (`defaultSchema`). */
+  /**
+   * The store's schema: on PostgreSQL the schema its tables live in, on MySQL the start of its tables' names
+   * (`<schema>_<table>`). Default: the store's (`defaultSchema`).
+   */
   schema?: string;
   /** The version to start from: `0` (the default) is a new database. */
   from?: number;
@@ -24,7 +27,8 @@ export interface MigrationStatementsOptions {
 export interface MigrationSqlOptions extends MigrationStatementsOptions {
   /**
    * Put drizzle-kit's `--> statement-breakpoint` between the statements, for a custom drizzle-kit migration
-   * (`drizzle-kit generate --custom`): its migrator runs them one at a time, which PGlite needs. Default: `false`.
+   * (`drizzle-kit generate --custom`): its migrator runs them one at a time, which PGlite and mysql2 need. Default:
+   * `false`.
    */
   statementBreakpoints?: boolean;
 }

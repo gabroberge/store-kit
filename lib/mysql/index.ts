@@ -8,6 +8,11 @@ export type { PrismaExecutorOptions } from '../postgres/executors/prisma.executo
 export type { SqlExecutor, SqlTransaction } from './interfaces/index.js';
 export type { SqlExecuteResult, SqlIsolationLevel, SqlTransactionOptions } from '../interfaces/index.js';
 
+// A store's schema: its versioned migrations and their SQL, the store's options, and its readiness
+export { StoreSchema } from './schema/index.js';
+export type { ResolvedStoreOptions, StoreMigration, StoreOptions, StoreReadinessOptions, StoreSchemaOptions } from './interfaces/index.js';
+export type { MigrationSqlOptions, MigrationStatementsOptions, StoreReadiness, StoreSchemaErrorDetails } from '../interfaces/index.js';
+
 // A store's statements: parameters as text with casts, columns read as text, identifiers and tables quoted, key
-// columns, MySQL's error numbers
-export { columns, keyColumn, mysqlErrorCode, quoteIdentifier, quoteTable, SqlParams, toBool, toInt, toJson, toText } from './sql/index.js';
+// columns, transaction-scoped locks, the deadlock retry of a store's own transactions, MySQL's error numbers
+export { columns, keyColumn, lockKeys, mysqlErrorCode, quoteIdentifier, quoteTable, retryOnDeadlock, SqlParams, toBool, toInt, toJson, toText } from './sql/index.js';

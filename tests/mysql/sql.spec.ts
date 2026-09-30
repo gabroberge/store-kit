@@ -1,0 +1,320 @@
+/**
+ * The helpers a MySQL store writes its statements with: SqlParams' placeholders, casts and values (whole numbers
+ * checked, LIMIT written in), columns() and the readers, quoteIdentifier(), quoteTable() and keyColumn(); lockKeys()'s
+ * row locks (held until the transaction ends, shared or exclusive, several keys sorted and taken once, in READ
+ * COMMITTED and REPEATABLE READ transactions alike); retryOnDeadlock() on a real deadlock through every client; and
+ * mysqlErrorCode() on each client's error shapes.
+ */
+import { createHash } from 'node:crypto';
+import mysql from 'mysql2/promise';
+import {
+  columns,
+  fromMysql2,
+  keyColumn,
+  lockKeys,
+  mysqlErrorCode,
+  quoteIdentifier,
+  quoteTable,
+  retryOnDeadlock,
+  SqlParams,
+  toBool,
+  toInt,
+  toJson,
+  toText,
+  type SqlExecutor,
+  type SqlTransaction,
+} from '../../lib/mysql/index.js';
+import { mysqlNoteSchema } from '../fixtures/notes/mysql-note.schema.js';
+import { clients, onMysql, testDatabase } from './support.js';
+
+const { database, reason } = await testDatabase('sql');
+
+describe('SqlParams on MySQL', () => {
+  it('writes a ? per value, casts what isn\'t text, collects the values as strings in order, and writes NULL-safe equality and IN lists', () => {
+    const p = new SqlParams();
+    expect([p.text('a'), p.int(7), p.bigint(1_790_000_000_000), p.bool(false), p.bool(true), p.json({ a: 1 }), p.json(undefined), p.text(null), p.int(null)]).toEqual([
+      '?',
+      'CAST(? AS SIGNED)',
+      'CAST(? AS SIGNED)',
+      'CAST(? AS UNSIGNED)',
+      'CAST(? AS UNSIGNED)',
+      'CAST(? AS JSON)',
+      'CAST(? AS JSON)',
+      '?',
+      'CAST(? AS SIGNED)',
+    ]);
+    expect(p.values).toEqual(['a', '7', '1790000000000', '0', '1', '{"a":1}', null, null, null]);
+
+    const q = new SqlParams();
+    expect(q.equals('group_key', null)).toBe('group_key IS NULL');
+    expect(q.equals('group_key', 'g1')).toBe('group_key = ?');
+    expect(q.in('state', [])).toBe('FALSE');
+    expect(q.in('state', ['waiting', 'active'])).toBe('state IN (?, ?)');
+    expect(q.values).toEqual(['g1', 'waiting', 'active']);
+  });
+
+  it('refuses a number that isn\'t whole, which MySQL would round or wrap without an error, and writes LIMIT counts into the statement', () => {
+    for (const value of [1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 63]) {
+      expect(() => new SqlParams().int(value)).toThrow(
+        `SqlParams.int() takes a whole number (or null), not ${String(value)}: MySQL would round it, or wrap it past 2^63, without an error.`,
+      );
+      expect(() => new SqlParams().bigint(value)).toThrow(`SqlParams.bigint() takes a whole number (or null), not ${String(value)}`);
+    }
+
+    const p = new SqlParams();
+    expect(`LIMIT ${p.limit(10)} OFFSET ${p.limit(0)}`).toBe('LIMIT 10 OFFSET 0');
+    expect(p.values).toEqual([]);
+    for (const value of [-1, 1.5, '10', Number.NaN]) {
+      expect(() => p.limit(value as number)).toThrow(`SqlParams.limit() takes a whole number from 0, not ${JSON.stringify(value)}.`);
+    }
+  });
+});
+
+describe('columns(), the readers, and identifiers on MySQL', () => {
+  it('cast each column to text under its own name, in backticks, prefixed with the alias, and read the text back', () => {
+    expect(columns(['id', 'run_at'])).toBe('CAST(`id` AS CHAR) AS `id`, CAST(`run_at` AS CHAR) AS `run_at`');
+    expect(columns(['id', 'rank'], 'j')).toBe('CAST(`j`.`id` AS CHAR) AS `id`, CAST(`j`.`rank` AS CHAR) AS `rank`');
+    expect(() => columns(['id; DROP TABLE x'])).toThrow('Invalid MySQL identifier "id; DROP TABLE x"');
+
+    expect([toText('a'), toText(null), toInt('1790000000000'), toInt(null), toBool('1'), toBool('0'), toBool(null), toJson('{"a": [1]}'), toJson(null)]).toEqual([
+      'a',
+      null,
+      1_790_000_000_000,
+      null,
+      true,
+      false,
+      false,
+      { a: [1] },
+      null,
+    ]);
+  });
+
+  it('quote identifiers and tables after checking them, and bound key columns', () => {
+    expect(quoteIdentifier('key')).toBe('`key`');
+    for (const name of ['', '1st', 'a`b', 'a b', 'x'.repeat(65), null]) {
+      expect(() => quoteIdentifier(name)).toThrow(`Invalid MySQL identifier ${JSON.stringify(name)}: use letters, digits and underscores, not starting with a digit, at most 64 characters.`);
+    }
+
+    expect(quoteTable('nest_outbox', 'messages', 'MySqlOutboxStore')).toBe('`nest_outbox_messages`');
+    expect(() => quoteTable('Nest', 'messages', 'MySqlOutboxStore')).toThrow('MySqlOutboxStore: invalid schema "Nest".');
+    expect(() => quoteTable('nest_outbox', 'Messages', 'MySqlOutboxStore')).toThrow(
+      'MySqlOutboxStore: invalid table name "Messages". Use lowercase letters, digits and underscores, starting with a letter.',
+    );
+    expect(() => quoteTable('nest_outbox', 'migrations', 'MySqlOutboxStore')).toThrow('MySqlOutboxStore: the table name "migrations" is taken');
+    expect(() => quoteTable('x'.repeat(40), 'y'.repeat(24), 'MySqlOutboxStore')).toThrow('is 65 characters long, and MySQL allows 64: use a shorter schema.');
+
+    expect(keyColumn(255)).toBe('varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin');
+    for (const length of [0, 769, 1.5]) {
+      expect(() => keyColumn(length)).toThrow(`keyColumn() takes a length from 1 to 768 characters (InnoDB's 3,072-byte index keys hold 768 four-byte characters), not ${length}.`);
+    }
+  });
+});
+
+describe('lockKeys()', () => {
+  onMysql(reason);
+
+  let pool: mysql.Pool;
+  let executor: SqlExecutor;
+  beforeAll(async () => {
+    if (database) {
+      pool = mysql.createPool({ uri: database.url, connectionLimit: 4 });
+      executor = fromMysql2(pool);
+      await mysqlNoteSchema.migrate(executor, 'sql_locks');
+    }
+  });
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  /** Holds `keys` in a transaction of its own until `release()`; `acquired` says whether it has them yet. */
+  function holder(keys: string | string[], options: { shared?: boolean; isolationLevel?: 'read committed' | 'repeatable read' } = {}) {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let acquired = false;
+    const done = executor.transaction(
+      async (tx) => {
+        await lockKeys(tx, 'sql_locks', keys, options);
+        acquired = true;
+        await released;
+      },
+      { isolationLevel: options.isolationLevel ?? 'read committed' },
+    );
+    return { release, done, acquired: () => acquired };
+  }
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
+
+  it('holds an exclusive lock until the transaction ends, in READ COMMITTED and REPEATABLE READ transactions alike', async () => {
+    for (const isolationLevel of ['read committed', 'repeatable read'] as const) {
+      const key = `exclusive:${isolationLevel}`;
+      const first = holder(key, { isolationLevel });
+      await settle();
+      const second = holder(key, { isolationLevel });
+      await settle();
+      expect([first.acquired(), second.acquired()]).toEqual([true, false]);
+      first.release();
+      await first.done;
+      await settle();
+      expect(second.acquired()).toBe(true);
+      second.release();
+      await second.done;
+    }
+  });
+
+  it("lets shared locks of a key share while excluding an exclusive one, once the key's row exists", async () => {
+    const created = holder('shared');
+    await settle();
+    created.release();
+    await created.done;
+
+    const readers = [holder('shared', { shared: true }), holder('shared', { shared: true })];
+    await settle();
+    const writer = holder('shared');
+    await settle();
+    expect([...readers.map((reader) => reader.acquired()), writer.acquired()]).toEqual([true, true, false]);
+    readers.forEach((reader) => reader.release());
+    await Promise.all(readers.map((reader) => reader.done));
+    await settle();
+    expect(writer.acquired()).toBe(true);
+    writer.release();
+    await writer.done;
+  });
+
+  it("releases the lock when the transaction rolls back, and keys the row by the key's hash", async () => {
+    const failing = executor.transaction(async (tx) => {
+      await lockKeys(tx, 'sql_locks', 'rolled-back');
+      throw new Error('changed my mind');
+    });
+    await expect(failing).rejects.toThrow('changed my mind');
+    const next = holder('rolled-back');
+    await settle();
+    expect(next.acquired()).toBe(true);
+    next.release();
+    await next.done;
+
+    const [row] = (await pool.query("SELECT COUNT(*) AS n FROM sql_locks_locks WHERE id = SHA2('rolled-back', 256)"))[0] as Array<{ n: number }>;
+    expect(row).toEqual({ n: 1 });
+  });
+
+  it('takes several keys one after another in sorted order, each once: ensure the row, then lock it', async () => {
+    const taken: unknown[] = [];
+    const tx: SqlTransaction = {
+      query: async <R extends object>(text: string, params?: readonly unknown[]) => {
+        taken.push([text, ...(params ?? [])]);
+        return (text.includes('FOR SHARE') ? [{ id: 'held' }] : []) as R[];
+      },
+      execute: async (text, params) => {
+        taken.push([text, ...(params ?? [])]);
+        return { affectedRows: 1 };
+      },
+    };
+    await lockKeys(tx, 'nest_notes', ['k:b', 'k:a', 'k:b']);
+    await lockKeys(tx, 'nest_notes', 'k:z', { shared: true });
+    const hash = (key: string) => createHash('sha256').update(key).digest('hex');
+    expect(taken).toEqual([
+      ['INSERT INTO `nest_notes_locks` (id) VALUES (?) ON DUPLICATE KEY UPDATE id = id', hash('k:a')],
+      ['SELECT id FROM `nest_notes_locks` WHERE id = ? FOR UPDATE', hash('k:a')],
+      ['INSERT INTO `nest_notes_locks` (id) VALUES (?) ON DUPLICATE KEY UPDATE id = id', hash('k:b')],
+      ['SELECT id FROM `nest_notes_locks` WHERE id = ? FOR UPDATE', hash('k:b')],
+      ['SELECT id FROM `nest_notes_locks` WHERE id = ? FOR SHARE', hash('k:z')],
+    ]);
+  });
+});
+
+describe.each(clients)('retryOnDeadlock() through $name', (factory) => {
+  onMysql(reason);
+
+  it("runs a store's own transaction again when MySQL rolled it back to break a deadlock, and it's READ COMMITTED", async () => {
+    const client = await factory.open(database!.url);
+    const table = `deadlocks_${factory.name.replace(/\W+/g, '_').toLowerCase()}`.slice(0, 60);
+    try {
+      await client.executor.execute(`CREATE TABLE ${table} (id varchar(8) NOT NULL PRIMARY KEY, n int NOT NULL)`);
+      await client.executor.execute(`INSERT INTO ${table} (id, n) VALUES ('a', 0), ('b', 0)`);
+
+      // Each locks its first row, waits until the other has its own, then asks for the other's: a deadlock, which MySQL
+      // breaks by rolling one of them back. That one runs again, and waits for the other's row this time.
+      const locked = { a: signal(), b: signal() };
+      const attempts = { a: 0, b: 0 };
+      const levels: string[] = [];
+      const cross = (mine: 'a' | 'b', theirs: 'a' | 'b') =>
+        retryOnDeadlock(client.executor, async (tx) => {
+          attempts[mine]++;
+          const [level] = await tx.query<{ level: string }>(
+            'SELECT ISOLATION_LEVEL AS level FROM performance_schema.events_transactions_current WHERE THREAD_ID = PS_CURRENT_THREAD_ID()',
+          );
+          levels.push(level!.level);
+          await tx.query(`SELECT id FROM ${table} WHERE id = ? FOR UPDATE`, [mine]);
+          if (attempts[mine] === 1) {
+            locked[mine].resolve();
+            await locked[theirs].promise;
+          }
+          await tx.query(`SELECT id FROM ${table} WHERE id = ? FOR UPDATE`, [theirs]);
+          await tx.execute(`UPDATE ${table} SET n = n + 1`);
+        });
+
+      await Promise.all([cross('a', 'b'), cross('b', 'a')]);
+      expect(attempts.a + attempts.b).toBe(3);
+      expect(await client.executor.query(`SELECT id, CAST(n AS CHAR) AS n FROM ${table} ORDER BY id`)).toEqual([
+        { id: 'a', n: '2' },
+        { id: 'b', n: '2' },
+      ]);
+      expect(new Set(levels)).toEqual(new Set(['READ COMMITTED']));
+    } finally {
+      await client.executor.execute(`DROP TABLE IF EXISTS ${table}`).catch(() => undefined);
+      await client.close();
+    }
+  });
+});
+
+describe('retryOnDeadlock() and mysqlErrorCode()', () => {
+  const deadlock = () => Object.assign(new Error('Deadlock found when trying to get lock; try restarting transaction'), { errno: 1213, sqlState: '40001', sqlMessage: 'Deadlock found' });
+  const executor = (work: () => unknown) => ({ transaction: async (run: (tx: never) => unknown) => run(work() as never) }) as unknown as SqlExecutor;
+
+  it('gives up after `attempts` runs, rethrows any other error at once, and takes a whole number of attempts from 1', async () => {
+    let runs = 0;
+    const failing = executor(() => undefined);
+    await expect(
+      retryOnDeadlock(
+        failing,
+        async () => {
+          runs++;
+          throw deadlock();
+        },
+        { attempts: 2 },
+      ),
+    ).rejects.toThrow('Deadlock found');
+    expect(runs).toBe(2);
+
+    runs = 0;
+    const duplicate = Object.assign(new Error('Duplicate entry'), { errno: 1062, sqlMessage: 'Duplicate entry' });
+    await expect(
+      retryOnDeadlock(failing, async () => {
+        runs++;
+        throw duplicate;
+      }),
+    ).rejects.toBe(duplicate);
+    expect(runs).toBe(1);
+    await expect(retryOnDeadlock(failing, async () => 1, { attempts: 0 })).rejects.toThrow('retryOnDeadlock() takes a whole number of attempts from 1, not 0.');
+  });
+
+  it("reads MySQL's error number from mysql2's, Drizzle's, TypeORM's and Prisma's errors, and none from other errors", () => {
+    const server = deadlock();
+    expect(mysqlErrorCode(server)).toBe(1213);
+    expect(mysqlErrorCode(Object.assign(new Error('Failed query: ...'), { cause: server }))).toBe(1213);
+    expect(mysqlErrorCode(Object.assign(new Error('QueryFailedError'), { driverError: server }))).toBe(1213);
+    expect(mysqlErrorCode({ code: 'P2034', meta: { driverAdapterError: { cause: { originalCode: '1213', originalMessage: 'Deadlock found' } } } })).toBe(1213);
+    expect(mysqlErrorCode(Object.assign(new Error('connect ECONNREFUSED'), { errno: -61, code: 'ECONNREFUSED' }))).toBeUndefined();
+    expect(mysqlErrorCode(Object.assign(new Error('relation "x" already exists'), { code: '42P07' }))).toBeUndefined();
+    expect(mysqlErrorCode(undefined)).toBeUndefined();
+  });
+});
+
+function signal(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}

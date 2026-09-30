@@ -1,6 +1,9 @@
 import type { StoreSchemaOptions } from '../interfaces/store-schema-options.interface.js';
 import type { DialectInfo } from './dialect.js';
 
+/** A store's definition as every dialect's `StoreSchema` takes it: its migrations are the dialect's own. */
+export type SchemaDefinition = Omit<StoreSchemaOptions, 'migrations'> & { migrations: readonly { version: number; name: string; up: unknown }[] };
+
 /** A migration's name: it goes into the `migrations` table as a literal. */
 const MIGRATION_NAME = /^[A-Za-z0-9_]+$/;
 
@@ -9,7 +12,7 @@ const MIGRATION_NAME = /^[A-Za-z0-9_]+$/;
  * messages would print as `undefined`, a default schema the store would refuse, and migrations that aren't versions
  * 1, 2, 3... in order, each with a name and statements.
  */
-export function checkSchemaOptions(options: StoreSchemaOptions, dialect: DialectInfo): void {
+export function checkSchemaOptions(options: SchemaDefinition, dialect: DialectInfo): void {
   for (const key of ['packageName', 'storeName', 'command'] as const) {
     const value = options?.[key];
     if (typeof value !== 'string' || value.length === 0) {

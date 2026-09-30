@@ -1,7 +1,11 @@
-import type { StoreMigration } from '../interfaces/store-migration.interface.js';
+/** What the version arithmetic needs of a migration, whichever dialect's it is. */
+export interface VersionedMigration {
+  version: number;
+  name: string;
+}
 
 /** The version a store needs: its last migration's. */
-export function latestVersion(migrations: readonly StoreMigration[]): number {
+export function latestVersion(migrations: readonly VersionedMigration[]): number {
   return migrations.at(-1)?.version ?? 0;
 }
 
@@ -21,6 +25,6 @@ export function migrationRange(storeName: string, latest: number, range: { from?
 }
 
 /** The migrations that bring a schema at version `from` to version `to`, in order. */
-export function migrationsBetween(migrations: readonly StoreMigration[], from: number, to: number): StoreMigration[] {
+export function migrationsBetween<M extends VersionedMigration>(migrations: readonly M[], from: number, to: number): M[] {
   return migrations.filter((migration) => migration.version > from && migration.version <= to);
 }
