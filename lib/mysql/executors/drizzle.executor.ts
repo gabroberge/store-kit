@@ -1,4 +1,5 @@
 import type { SqlExecuteResult, SqlIsolationLevel, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import { notATransaction } from '../../sql/not-a-transaction.js';
 import { describeValue, hasMethod, isMysql2Client, isolationSql } from '../../utils/executor.util.js';
 import type { SqlExecutor, SqlTransaction } from '../interfaces/mysql-executor.interface.js';
 import { assertFoundRows, checkPlaceholders, mysql2Flags } from './mysql-client.util.js';
@@ -72,7 +73,7 @@ class DrizzleExecutor implements SqlExecutor {
   wrapTransaction(transaction: unknown): SqlTransaction {
     if (!isTransaction(transaction)) {
       const other = otherDatabase(transaction);
-      throw new TypeError(
+      throw notATransaction(
         isDatabase(transaction)
           ? 'Pass the tx your db.transaction() callback receives, not the database: a statement on the database runs outside your transaction.'
           : other

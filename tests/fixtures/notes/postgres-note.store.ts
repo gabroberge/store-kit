@@ -45,7 +45,8 @@ export class PostgresNoteStore {
   private readonly readiness: StoreReadiness;
   private readonly t: { notes: string; tags: string };
 
-  constructor(options: StoreOptions) {
+  /** A PostgreSQL executor: a MySQL one here is a compile error (tests/types/executor-dialects.spec.ts). */
+  constructor(options: StoreOptions<'postgres'>) {
     const resolved = noteSchema.resolveOptions(options);
     this.executor = resolved.executor;
     this.readiness = noteSchema.readiness({ ...resolved, logger: { log: (message) => this.logged.push(message) } });

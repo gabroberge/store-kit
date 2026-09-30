@@ -13,7 +13,7 @@ import type { SqlExecutor } from './mysql-executor.interface.js';
  * }
  * ```
  */
-export interface StoreOptions extends AnyStoreOptions {
+export interface StoreOptions extends AnyStoreOptions<'mysql'> {
   /**
    * How the store reaches the database: a MySQL executor, such as `fromMysql2(pool)`, `fromDrizzle(db)`,
    * `fromTypeOrm(dataSource)`, `fromPrisma(prisma)` or `fromKysely(db)` from the store's `/mysql` subpath. The store's

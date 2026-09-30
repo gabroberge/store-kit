@@ -2,9 +2,11 @@
 // it: a package's `/postgres` subpath re-exports the executors and their types. Nothing here imports a driver or an
 // ORM: the executors reach the client the application passes them.
 
-// Executors: a store's SQL through the application's pool or ORM, and its transactions
+// Executors: a store's SQL through the application's pool or ORM, and its transactions (`SqlExecutor<'postgres'>`), and
+// their refusal of an object that isn't a transaction they can join, by its code
 export { fromDrizzle, fromKysely, fromPg, fromPrisma, fromTypeOrm, type PrismaExecutorOptions } from './executors/index.js';
 export type { SqlExecutor, SqlIsolationLevel, SqlTransaction, SqlTransactionOptions } from '../interfaces/index.js';
+export { isNotATransactionError } from '../sql/index.js';
 
 // A store's schema: its versioned migrations and their SQL, the store's options, and its readiness
 export { StoreSchema } from './schema/index.js';

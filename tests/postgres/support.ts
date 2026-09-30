@@ -12,6 +12,7 @@ import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import { Column, DataSource, Entity, PrimaryColumn } from 'typeorm';
+import type { SqlDialect } from '../../lib/index.js';
 import { fromDrizzle, fromKysely, fromPg, fromPrisma, fromTypeOrm, type SqlExecutor } from '../../lib/postgres/index.js';
 import { PrismaClient } from '../fixtures/prisma/generated/client.js';
 import { endPool, startPostgres } from '../support/postgres.js';
@@ -24,7 +25,7 @@ export type Isolation = 'read committed' | 'repeatable read';
 /** A database client as an application holds one. */
 export interface Client {
   name: string;
-  executor: SqlExecutor;
+  executor: SqlExecutor<'postgres'>;
   /** A transaction as the application runs one with this client: `work` gets the ORM's own transaction object. */
   transaction<T>(work: (tx: unknown) => Promise<T>, isolation?: Isolation): Promise<T>;
   /** What an application might pass by mistake instead of its transaction: the pool, the database, the client. */
@@ -215,8 +216,8 @@ export function onPostgres(reason: string | undefined): void {
   });
 }
 
-/** An executor that records every statement it runs, and its parameters. */
-export function recording(executor: SqlExecutor): { executor: SqlExecutor; statements: Array<{ text: string; params?: readonly unknown[] }> } {
+/** An executor that records every statement it runs, and its parameters: of the dialect of the executor it wraps. */
+export function recording<D extends SqlDialect>(executor: SqlExecutor<D>): { executor: SqlExecutor<D>; statements: Array<{ text: string; params?: readonly unknown[] }> } {
   const statements: Array<{ text: string; params?: readonly unknown[] }> = [];
   const record = (tx: { query: SqlExecutor['query'] }) => ({
     query: <R extends object>(text: string, params?: readonly unknown[]) => {

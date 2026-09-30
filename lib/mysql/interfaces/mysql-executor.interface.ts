@@ -38,9 +38,13 @@ export interface SqlTransaction extends AnySqlTransaction {
  *   await tx.execute('UPDATE nest_queues_jobs SET state = ? WHERE id = ?', ['active', job.id]);
  * }, { isolationLevel: 'read committed' });
  * ```
+ *
+ * It's the root's `SqlExecutor<'mysql'>` with `execute()` required: a MySQL store's options take it, and a PostgreSQL
+ * executor there is a compile error. `SqlExecutor<'mysql'>` names the same type, as a PostgreSQL store's options name
+ * theirs `SqlExecutor<'postgres'>`.
  */
-export interface SqlExecutor extends AnySqlExecutor {
-  readonly dialect: 'mysql';
+export interface SqlExecutor<D extends 'mysql' = 'mysql'> extends AnySqlExecutor<D> {
+  readonly dialect: D;
   /** Runs one statement that writes, outside any transaction, as `SqlTransaction.execute()`. */
   execute(text: string, params?: readonly unknown[]): Promise<SqlExecuteResult>;
   transaction<T>(work: (transaction: SqlTransaction) => Promise<T>, options?: SqlTransactionOptions): Promise<T>;

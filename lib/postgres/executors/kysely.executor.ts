@@ -1,4 +1,5 @@
 import type { SqlExecuteResult, SqlExecutor, SqlIsolationLevel, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import { notATransaction } from '../../sql/not-a-transaction.js';
 import { describeValue, hasMethod, isolationSql } from '../../utils/executor.util.js';
 
 /** The part of a Kysely instance (or of a `Transaction`) the executor uses. */
@@ -24,7 +25,7 @@ export interface KyselyLike {
  * });
  * ```
  */
-export function fromKysely(db: KyselyLike): SqlExecutor {
+export function fromKysely(db: KyselyLike): SqlExecutor<'postgres'> {
   if (!isKysely(db) || db.isTransaction) {
     throw new TypeError(
       isKysely(db)
@@ -40,7 +41,7 @@ export function fromKysely(db: KyselyLike): SqlExecutor {
   return new KyselyExecutor(db);
 }
 
-class KyselyExecutor implements SqlExecutor {
+class KyselyExecutor implements SqlExecutor<'postgres'> {
   readonly dialect = 'postgres';
   private readonly raw: KyselyLike;
 
@@ -69,7 +70,7 @@ class KyselyExecutor implements SqlExecutor {
 
   wrapTransaction(transaction: unknown): SqlTransaction {
     if (!isKysely(transaction) || !transaction.isTransaction) {
-      throw new TypeError(
+      throw notATransaction(
         isKysely(transaction)
           ? 'Pass the trx your db.transaction().execute() callback receives, not the Kysely instance: it runs each statement outside your transaction.'
           : `Pass the trx your Kysely db.transaction().execute() callback receives, got ${describeValue(transaction)}.`,
@@ -78,7 +79,7 @@ class KyselyExecutor implements SqlExecutor {
 
     const database = otherDatabase(transaction);
     if (database) {
-      throw new TypeError(`Pass the trx of a Kysely instance with a PostgreSQL dialect, not a ${database} one: the store's statements run on PostgreSQL.`);
+      throw notATransaction(`Pass the trx of a Kysely instance with a PostgreSQL dialect, not a ${database} one: the store's statements run on PostgreSQL.`);
     }
     return kyselyTransaction(transaction);
   }

@@ -1,7 +1,7 @@
-import type { SqlExecutor } from '../interfaces/sql-executor.interface.js';
+import type { SqlDialect } from '../interfaces/sql-executor.interface.js';
 
 /** A database a store can run on: an executor's `dialect`. */
-export type SqlDialect = SqlExecutor['dialect'];
+export type { SqlDialect };
 
 /** How messages name each dialect. */
 export const DIALECT_NAMES: Record<SqlDialect, string> = {

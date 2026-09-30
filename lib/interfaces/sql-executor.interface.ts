@@ -1,4 +1,13 @@
 /**
+ * A database a store can run on: what an executor's `dialect` says, and `SqlExecutor`'s type parameter.
+ *
+ * ```ts
+ * const dialect: SqlDialect = executor.dialect; // 'postgres' or 'mysql'
+ * ```
+ */
+export type SqlDialect = 'postgres' | 'mysql';
+
+/**
  * A transaction isolation level: the four of the SQL standard, which PostgreSQL and MySQL share.
  *
  * ```ts
@@ -77,13 +86,24 @@ export interface SqlTransaction {
  *   await tx.query('UPDATE nest_queues.jobs SET state = $1::text WHERE id = $2::text', ['active', job.id]);
  * });
  * ```
+ *
+ * `D` is its dialect: `fromPg()` and the rest of `/postgres` return a `SqlExecutor<'postgres'>`, the executors of
+ * `/mysql` a `SqlExecutor<'mysql'>`, so a store's options that take `SqlExecutor<'postgres'>` refuse a MySQL executor
+ * when the application compiles, before the store refuses it at run time. `SqlExecutor` alone is an executor of either
+ * dialect.
+ *
+ * ```ts
+ * export interface PostgresOutboxStoreOptions {
+ *   executor: SqlExecutor<'postgres'>; // fromMysql2(pool) here is a compile error
+ * }
+ * ```
  */
-export interface SqlExecutor {
+export interface SqlExecutor<D extends SqlDialect = SqlDialect> {
   /**
    * The database it runs on, which decides the SQL it takes: a store refuses an executor of another dialect (a
    * PostgreSQL store's statements can't run on MySQL).
    */
-  readonly dialect: 'postgres' | 'mysql';
+  readonly dialect: D;
   /** Runs one statement outside any transaction (on a pool, on any of its connections), as `SqlTransaction.query()`. */
   query<R extends object = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<R[]>;
   /**
@@ -100,7 +120,10 @@ export interface SqlExecutor {
    * The application's transaction object (Drizzle's `tx`, a TypeORM `EntityManager`, a Prisma transaction client, a
    * Kysely `Transaction`, a node-postgres client after `BEGIN`, a mysql2 connection after `START TRANSACTION`), so
    * statements run in it and commit or roll back with the application's own writes. Throws a `TypeError` for anything
-   * else, such as the database or pool itself.
+   * else, such as the database or pool itself. The kit's executors give that `TypeError` the `code`
+   * `'ERR_SQL_NOT_A_TRANSACTION'` (`isNotATransactionError()` recognizes it), which a store can turn into its own
+   * error: mysql2's executor throws it from the transaction's first statement, as only the server knows whether the
+   * connection is in a transaction.
    */
   wrapTransaction(transaction: unknown): SqlTransaction;
 }

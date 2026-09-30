@@ -1,4 +1,5 @@
 import type { SqlExecuteResult, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import { notATransaction } from '../../sql/not-a-transaction.js';
 import { describeValue, hasMethod, isMysql2Client, isolationSql } from '../../utils/executor.util.js';
 import type { SqlExecutor, SqlTransaction } from '../interfaces/mysql-executor.interface.js';
 import { assertFoundRows, checkPlaceholders, isPgClient, mysql2Flags } from './mysql-client.util.js';
@@ -173,7 +174,7 @@ async function runTransaction<T>(connection: Mysql2ConnectionLike, work: (transa
 
 function mysql2Transaction(transaction: unknown): SqlTransaction {
   if (!isMysql2Client(transaction) || hasMethod(transaction, 'getConnection')) {
-    throw new TypeError(
+    throw notATransaction(
       "Pass the mysql2 connection your transaction runs on (const connection = await pool.getConnection(); await connection.beginTransaction()), " +
         (hasMethod(transaction, 'getConnection')
           ? 'not the pool: it runs each statement on any of its connections, outside your transaction.'
@@ -207,7 +208,7 @@ async function assertInTransaction(connection: Mysql2ConnectionLike): Promise<vo
   const [header] = await connection.query('DO 0');
   const status = (header as { serverStatus?: unknown } | undefined)?.serverStatus;
   if (typeof status === 'number' && (status & IN_TRANSACTION) === 0) {
-    throw new TypeError("The mysql2 connection isn't in a transaction: call beginTransaction() on it first, or each statement commits on its own.");
+    throw notATransaction("The mysql2 connection isn't in a transaction: call beginTransaction() on it first, or each statement commits on its own.");
   }
 }
 

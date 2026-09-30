@@ -13,7 +13,7 @@ import mysqlCallbacks from 'mysql2';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
 import { DataSource } from 'typeorm';
-import { fromDrizzle, fromKysely, fromMysql2, fromPrisma, fromTypeOrm, lockKeys, mysqlErrorCode } from '../../lib/mysql/index.js';
+import { fromDrizzle, fromKysely, fromMysql2, fromPrisma, fromTypeOrm, isNotATransactionError, lockKeys, mysqlErrorCode } from '../../lib/mysql/index.js';
 import { fromDrizzle as fromPgDrizzle, fromKysely as fromPgKysely, fromTypeOrm as fromPgTypeOrm } from '../../lib/postgres/index.js';
 import { sqlExecutorContract } from '../../lib/testing/index.js';
 import { PrismaClient } from '../fixtures/prisma-mysql/generated/client.js';
@@ -44,6 +44,23 @@ describe.each(targets)('$name', ({ open }) => {
       /^(Pass the .* not |The mysql2 connection isn't in a transaction)/,
     );
     expect(() => client.executor.wrapTransaction({})).toThrow(/^Pass the .* got an object\.$/);
+  });
+
+  it("refuses them with a TypeError whose code a store recognizes (ERR_SQL_NOT_A_TRANSACTION), a connection's at its first statement", async () => {
+    for (const notATransaction of [client.root, {}, undefined]) {
+      // Refused at once, or (a mysql2 connection outside a transaction) by its first statement, before it writes.
+      const refusal = await (async () => client.executor.wrapTransaction(notATransaction).execute('DO 0'))().catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(TypeError);
+      expect(refusal).toMatchObject({ name: 'TypeError', code: 'ERR_SQL_NOT_A_TRANSACTION' });
+      expect(isNotATransactionError(refusal)).toBe(true);
+    }
+
+    // A statement's own mistake in a transaction the executor joined is no refusal of the transaction: no code.
+    const mistake = await client
+      .transaction((tx) => client.executor.wrapTransaction(tx).query('SELECT ? AS a, ? AS b', ['one']))
+      .catch((error: unknown) => error);
+    expect(mistake).toBeInstanceOf(TypeError);
+    expect(isNotATransactionError(mistake)).toBe(false);
   });
 
   it('refuses a statement whose ? placeholders and params differ, before it runs', async () => {
@@ -262,5 +279,57 @@ describe('fromKysely() and another database', () => {
     expect(() => executor.wrapTransaction(pgTrx)).toThrow('Pass the trx of a Kysely instance with a MySQL dialect, not a PostgreSQL one');
     expect(() => fromPgKysely(mysqlDb as never)).toThrow('fromKysely() takes a Kysely instance with a PostgreSQL dialect, not a MySQL one.');
   });
+});
 
+describe("the code of a MySQL executor's refusal of anything but a transaction", () => {
+  // Nothing connects: the pools open their connections at the first query.
+  const unreachable = async () => {
+    throw new Error('no database here');
+  };
+
+  it("is on its refusal of another dialect's transaction too, and on no other TypeError", async () => {
+    const pool = mysql.createPool({ host: '127.0.0.1', port: 1, connectionLimit: 1 });
+    try {
+      const postgres = new Kysely<object>({ dialect: new PostgresDialect({ pool: unreachable as never }) });
+      const kysely = fromKysely(new Kysely<object>({ dialect: new MysqlDialect({ pool: unreachable as never }) }) as never);
+      class PgTransaction {}
+      Object.assign(PgTransaction, { [Symbol.for('drizzle:entityKind')]: 'PgTransaction' });
+      class MySql2Database {
+        execute() {}
+        transaction() {}
+      }
+      Object.assign(MySql2Database, { [Symbol.for('drizzle:entityKind')]: 'MySql2Database' });
+      const pgSource = { '@instanceof': Symbol.for('DataSource'), createQueryRunner() {}, options: { type: 'postgres' } };
+      const source = { '@instanceof': Symbol.for('DataSource'), createQueryRunner() {}, transaction() {}, options: { type: 'mysql' } };
+      const refusals = [
+        () => fromMysql2(pool).wrapTransaction(pool),
+        () => fromMysql2(pool).wrapTransaction(new pg.Client()),
+        () => fromDrizzle(new MySql2Database() as never).wrapTransaction(new PgTransaction()),
+        () => kysely.wrapTransaction({ isTransaction: true, executeQuery() {}, withoutPlugins() {}, getExecutor: () => postgres.getExecutor() }),
+        () => fromTypeOrm(source as never).wrapTransaction({ '@instanceof': Symbol.for('EntityManager'), connection: pgSource, queryRunner: { isTransactionActive: true, connection: pgSource } }),
+        () => fromPrisma({ $queryRawUnsafe() {}, $executeRawUnsafe() {}, $transaction() {}, $connect() {} } as never).wrapTransaction({ $connect() {}, $queryRawUnsafe() {} }),
+      ];
+      for (const refusal of refusals) {
+        let error: unknown;
+        try {
+          refusal();
+        } catch (caught) {
+          error = caught;
+        }
+        expect(error).toMatchObject({ name: 'TypeError', code: 'ERR_SQL_NOT_A_TRANSACTION' });
+      }
+
+      // The executors' other TypeErrors are about their own arguments: no code.
+      for (const misuse of [() => fromMysql2({} as never), () => fromKysely(postgres as never), () => fromTypeOrm(pgSource as never)]) {
+        expect(misuse).toThrow(TypeError);
+        try {
+          misuse();
+        } catch (error) {
+          expect(isNotATransactionError(error)).toBe(false);
+        }
+      }
+    } finally {
+      await pool.end();
+    }
+  });
 });

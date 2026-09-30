@@ -1,4 +1,5 @@
 import type { SqlExecuteResult, SqlExecutor, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import { notATransaction } from '../../sql/not-a-transaction.js';
 import { describeValue, hasMethod, isolationSql } from '../../utils/executor.util.js';
 
 /** The part of a TypeORM `QueryRunner` the executor uses. */
@@ -40,7 +41,7 @@ const ENTITY_MANAGER = Symbol.for('EntityManager');
  * });
  * ```
  */
-export function fromTypeOrm(dataSource: TypeOrmDataSourceLike | TypeOrmEntityManagerLike): SqlExecutor {
+export function fromTypeOrm(dataSource: TypeOrmDataSourceLike | TypeOrmEntityManagerLike): SqlExecutor<'postgres'> {
   const source = isEntityManager(dataSource) ? dataSource.connection : dataSource;
   if (isEntityManager(dataSource) && dataSource.queryRunner?.isTransactionActive) {
     throw new TypeError("fromTypeOrm() takes the DataSource (or its manager), not a transaction's manager: pass that to a store method that takes your transaction ({ transaction: manager }).");
@@ -54,7 +55,7 @@ export function fromTypeOrm(dataSource: TypeOrmDataSourceLike | TypeOrmEntityMan
   return new TypeOrmExecutor(source);
 }
 
-class TypeOrmExecutor implements SqlExecutor {
+class TypeOrmExecutor implements SqlExecutor<'postgres'> {
   readonly dialect = 'postgres';
 
   constructor(private readonly dataSource: TypeOrmDataSourceLike) {}
@@ -85,7 +86,7 @@ class TypeOrmExecutor implements SqlExecutor {
   wrapTransaction(transaction: unknown): SqlTransaction {
     const runner = isEntityManager(transaction) ? transaction.queryRunner : isQueryRunner(transaction) ? transaction : undefined;
     if (!runner?.isTransactionActive) {
-      throw new TypeError(
+      throw notATransaction(
         isEntityManager(transaction) || isQueryRunner(transaction)
           ? 'Pass the EntityManager your dataSource.transaction() callback receives (or a QueryRunner after startTransaction()), not dataSource.manager or a runner outside a transaction: each statement would commit on its own.'
           : `Pass the EntityManager your TypeORM dataSource.transaction() callback receives, got ${describeValue(transaction)}.`,
@@ -94,7 +95,7 @@ class TypeOrmExecutor implements SqlExecutor {
 
     const type = (runner as { connection?: { options?: { type?: unknown } } }).connection?.options?.type;
     if (type !== undefined && type !== 'postgres') {
-      throw new TypeError(`Pass the EntityManager of a DataSource of type 'postgres', not '${String(type)}': the store's statements run on PostgreSQL.`);
+      throw notATransaction(`Pass the EntityManager of a DataSource of type 'postgres', not '${String(type)}': the store's statements run on PostgreSQL.`);
     }
     return runnerTransaction(runner);
   }

@@ -1,4 +1,5 @@
 import type { SqlExecuteResult, SqlExecutor, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import { notATransaction } from '../../sql/not-a-transaction.js';
 import { parseDuration, type Duration } from '../../utils/duration.util.js';
 import { describeValue, hasMethod, isolationSql } from '../../utils/executor.util.js';
 
@@ -55,7 +56,7 @@ const PRISMA_ISOLATION: Record<string, string> = {
  * });
  * ```
  */
-export function fromPrisma(prisma: PrismaRootClientLike, options: PrismaExecutorOptions = {}): SqlExecutor {
+export function fromPrisma(prisma: PrismaRootClientLike, options: PrismaExecutorOptions = {}): SqlExecutor<'postgres'> {
   if (!hasMethod(prisma, '$queryRawUnsafe') || !hasMethod(prisma, '$transaction') || !hasMethod(prisma, '$connect')) {
     throw new TypeError(
       hasMethod(prisma, '$queryRawUnsafe')
@@ -66,7 +67,7 @@ export function fromPrisma(prisma: PrismaRootClientLike, options: PrismaExecutor
   return new PrismaExecutor(prisma, { maxWait: parseDuration(options.maxWait ?? '10s'), timeout: parseDuration(options.timeout ?? '1m') });
 }
 
-class PrismaExecutor implements SqlExecutor {
+class PrismaExecutor implements SqlExecutor<'postgres'> {
   readonly dialect = 'postgres';
 
   constructor(
@@ -92,7 +93,7 @@ class PrismaExecutor implements SqlExecutor {
   wrapTransaction(transaction: unknown): SqlTransaction {
     // A transaction client is the client without $connect() and $disconnect(): Prisma leaves them out of it.
     if (!hasMethod(transaction, '$queryRawUnsafe') || hasMethod(transaction, '$connect')) {
-      throw new TypeError(
+      throw notATransaction(
         hasMethod(transaction, '$connect')
           ? 'Pass the tx your prisma.$transaction(async (tx) => ...) callback receives, not the client: it runs each statement outside your transaction.'
           : `Pass the tx your Prisma $transaction(async (tx) => ...) callback receives, got ${describeValue(transaction)}.`,

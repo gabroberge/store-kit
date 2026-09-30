@@ -1,4 +1,5 @@
 import type { SqlExecuteResult, SqlExecutor, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import { notATransaction } from '../../sql/not-a-transaction.js';
 import { describeValue, hasMethod, isMysql2Client, isolationSql } from '../../utils/executor.util.js';
 
 /** The part of a node-postgres `Client` (or `PoolClient`) the executor uses. */
@@ -41,7 +42,7 @@ export interface PgPoolLike {
  * The transaction object is a client (not the pool) in a transaction; with `pg` 8.21 or later, one that isn't (no
  * `BEGIN` yet, or a failed transaction) is refused as well.
  */
-export function fromPg(pool: PgPoolLike | PgClientLike): SqlExecutor {
+export function fromPg(pool: PgPoolLike | PgClientLike): SqlExecutor<'postgres'> {
   if (isMysql2Client(pool)) {
     throw new TypeError(
       "fromPg() takes a node-postgres Pool (or a connected Client), not a mysql2 pool or connection: a MySQL store takes that, through fromMysql2() from its package's /mysql subpath.",
@@ -53,7 +54,7 @@ export function fromPg(pool: PgPoolLike | PgClientLike): SqlExecutor {
   return isPool(pool) ? new PgPoolExecutor(pool) : new PgClientExecutor(pool);
 }
 
-class PgPoolExecutor implements SqlExecutor {
+class PgPoolExecutor implements SqlExecutor<'postgres'> {
   readonly dialect = 'postgres';
 
   constructor(private readonly pool: PgPoolLike) {}
@@ -83,7 +84,7 @@ class PgPoolExecutor implements SqlExecutor {
   }
 }
 
-class PgClientExecutor implements SqlExecutor {
+class PgClientExecutor implements SqlExecutor<'postgres'> {
   readonly dialect = 'postgres';
   private tail: Promise<unknown> = Promise.resolve();
 
@@ -155,10 +156,10 @@ async function runTransaction<T>(client: PgClientLike, work: (transaction: SqlTr
 
 function pgTransaction(transaction: unknown): SqlTransaction {
   if (isMysql2Client(transaction)) {
-    throw new TypeError("Pass the node-postgres client your transaction runs on, not a mysql2 connection: the store's statements run on PostgreSQL.");
+    throw notATransaction("Pass the node-postgres client your transaction runs on, not a mysql2 connection: the store's statements run on PostgreSQL.");
   }
   if (!hasMethod(transaction, 'query') || !hasMethod(transaction, 'connect') || isPool(transaction)) {
-    throw new TypeError(
+    throw notATransaction(
       "Pass the node-postgres client your transaction runs on (const client = await pool.connect(); await client.query('BEGIN')), " +
         (isPool(transaction) ? 'not the pool: it runs each statement on any of its connections, outside your transaction.' : `got ${describeValue(transaction)}.`),
     );
@@ -168,10 +169,10 @@ function pgTransaction(transaction: unknown): SqlTransaction {
   if (typeof client.getTransactionStatus === 'function') {
     const status = client.getTransactionStatus();
     if (status === 'E') {
-      throw new TypeError('The node-postgres client is in a failed transaction: roll it back.');
+      throw notATransaction('The node-postgres client is in a failed transaction: roll it back.');
     }
     if (status !== 'T') {
-      throw new TypeError("The node-postgres client isn't in a transaction: send BEGIN on it first, or each statement commits on its own.");
+      throw notATransaction("The node-postgres client isn't in a transaction: send BEGIN on it first, or each statement commits on its own.");
     }
   }
   return clientTransaction(client);

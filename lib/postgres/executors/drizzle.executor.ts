@@ -1,4 +1,5 @@
 import type { SqlExecuteResult, SqlExecutor, SqlIsolationLevel, SqlTransaction, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import { notATransaction } from '../../sql/not-a-transaction.js';
 import { describeValue, hasMethod, isolationSql } from '../../utils/executor.util.js';
 
 /** The part of a Drizzle PostgreSQL database (or its `tx`) the executor uses. */
@@ -24,7 +25,7 @@ const ENTITY_KIND = Symbol.for('drizzle:entityKind');
  * });
  * ```
  */
-export function fromDrizzle(db: DrizzleDatabaseLike): SqlExecutor {
+export function fromDrizzle(db: DrizzleDatabaseLike): SqlExecutor<'postgres'> {
   if (!isDatabase(db) || isTransaction(db) || !hasMethod(db, 'execute')) {
     throw new TypeError(
       isTransaction(db)
@@ -35,7 +36,7 @@ export function fromDrizzle(db: DrizzleDatabaseLike): SqlExecutor {
   return new DrizzleExecutor(db);
 }
 
-class DrizzleExecutor implements SqlExecutor {
+class DrizzleExecutor implements SqlExecutor<'postgres'> {
   readonly dialect = 'postgres';
 
   constructor(private readonly db: DrizzleDatabaseLike) {}
@@ -58,7 +59,7 @@ class DrizzleExecutor implements SqlExecutor {
 
   wrapTransaction(transaction: unknown): SqlTransaction {
     if (!isTransaction(transaction)) {
-      throw new TypeError(
+      throw notATransaction(
         isDatabase(transaction)
           ? 'Pass the tx your db.transaction() callback receives, not the database: a statement on the database runs outside your transaction.'
           : `Pass the tx your Drizzle db.transaction() callback receives, got ${describeValue(transaction)}.`,

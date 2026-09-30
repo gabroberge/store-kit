@@ -1,4 +1,5 @@
 import type { SqlExecuteResult, SqlTransactionOptions } from '../../interfaces/sql-executor.interface.js';
+import { notATransaction } from '../../sql/not-a-transaction.js';
 import { describeValue, hasMethod, isolationSql } from '../../utils/executor.util.js';
 import type { SqlExecutor, SqlTransaction } from '../interfaces/mysql-executor.interface.js';
 import { assertFoundRows, checkPlaceholders, mysql2Flags } from './mysql-client.util.js';
@@ -102,7 +103,7 @@ class TypeOrmExecutor implements SqlExecutor {
   wrapTransaction(transaction: unknown): SqlTransaction {
     const runner = isEntityManager(transaction) ? transaction.queryRunner : isQueryRunner(transaction) ? transaction : undefined;
     if (!runner?.isTransactionActive) {
-      throw new TypeError(
+      throw notATransaction(
         isEntityManager(transaction) || isQueryRunner(transaction)
           ? 'Pass the EntityManager your dataSource.transaction() callback receives (or a QueryRunner after startTransaction()), not dataSource.manager or a runner outside a transaction: each statement would commit on its own.'
           : `Pass the EntityManager your TypeORM dataSource.transaction() callback receives, got ${describeValue(transaction)}.`,
@@ -111,7 +112,7 @@ class TypeOrmExecutor implements SqlExecutor {
 
     const type = (runner as { connection?: { options?: { type?: unknown } } }).connection?.options?.type;
     if (type !== undefined && type !== 'mysql') {
-      throw new TypeError(`Pass the EntityManager of a DataSource of type 'mysql', not '${String(type)}': the store's statements run on MySQL.`);
+      throw notATransaction(`Pass the EntityManager of a DataSource of type 'mysql', not '${String(type)}': the store's statements run on MySQL.`);
     }
     return runnerTransaction(runner);
   }

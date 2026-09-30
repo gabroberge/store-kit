@@ -8,7 +8,9 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { CamelCasePlugin, Kysely, MysqlDialect, PostgresAdapter, PostgresDialect, SqliteDialect } from 'kysely';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
-import { advisoryLock, fromDrizzle, fromKysely, fromPg, fromPrisma, fromTypeOrm } from '../../lib/postgres/index.js';
+import { isNotATransactionError as fromTheRoot } from '../../lib/index.js';
+import { isNotATransactionError as fromMysqlEntry } from '../../lib/mysql/index.js';
+import { advisoryLock, fromDrizzle, fromKysely, fromPg, fromPrisma, fromTypeOrm, isNotATransactionError } from '../../lib/postgres/index.js';
 import { sqlExecutorContract } from '../../lib/testing/index.js';
 import { PrismaClient } from '../fixtures/prisma/generated/client.js';
 import { endPool } from '../support/postgres.js';
@@ -81,7 +83,26 @@ describe.each(targets)('$name', ({ open, skip }) => {
     expect(() => client.executor.wrapTransaction(client.root)).toThrow(/^(Pass the .* not |The node-postgres client isn't in a transaction)/);
     expect(() => client.executor.wrapTransaction({})).toThrow(/^Pass the .* got an object\.$/);
   });
+
+  it('refuses them with a TypeError whose code a store recognizes: ERR_SQL_NOT_A_TRANSACTION', () => {
+    for (const notATransaction of [client.root, {}, undefined]) {
+      const refusal = thrown(() => client.executor.wrapTransaction(notATransaction));
+      expect(refusal).toBeInstanceOf(TypeError);
+      expect(refusal).toMatchObject({ name: 'TypeError', code: 'ERR_SQL_NOT_A_TRANSACTION' });
+      expect(isNotATransactionError(refusal)).toBe(true);
+    }
+  });
 });
+
+/** What `act()` throws. */
+function thrown(act: () => unknown): unknown {
+  try {
+    act();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('It threw nothing.');
+}
 
 describe('the clients each executor takes', () => {
   onPostgres(reason);
@@ -259,6 +280,54 @@ describe('fromPg() and MySQL', () => {
       );
     } finally {
       await pool.end();
+    }
+  });
+});
+
+describe('the code of a refusal of anything but a transaction', () => {
+  // Nothing connects: the pools open their connections at the first query.
+  const unreachable = async () => {
+    throw new Error('no database here');
+  };
+
+  it("is on each executor's refusal of another dialect's transaction too, and on no other TypeError", async () => {
+    const mysqlPool = mysql.createPool({ host: '127.0.0.1', port: 1, connectionLimit: 1 });
+    const pgPool = new pg.Pool({ connectionString: 'postgres://nobody@127.0.0.1:1/none' });
+    try {
+      const mysqlKysely = new Kysely<object>({ dialect: new MysqlDialect({ pool: unreachable as never }) });
+      const kysely = fromKysely(new Kysely<object>({ dialect: new PostgresDialect({ pool: unreachable as never }) }) as never);
+      const mysqlSource = { '@instanceof': Symbol.for('DataSource'), createQueryRunner() {}, options: { type: 'mysql' } };
+      const source = { '@instanceof': Symbol.for('DataSource'), createQueryRunner() {}, transaction() {}, options: { type: 'postgres' } };
+      const refusals = [
+        () => fromPg(pgPool).wrapTransaction(mysqlPool),
+        () => fromPg(pgPool).wrapTransaction(pgPool),
+        () => kysely.wrapTransaction({ isTransaction: true, executeQuery() {}, withoutPlugins() {}, getExecutor: () => mysqlKysely.getExecutor() }),
+        () => fromTypeOrm(source as never).wrapTransaction({ '@instanceof': Symbol.for('EntityManager'), connection: mysqlSource, queryRunner: { isTransactionActive: true, connection: mysqlSource } }),
+        () => fromPrisma({ $queryRawUnsafe() {}, $executeRawUnsafe() {}, $transaction() {}, $connect() {} } as never).wrapTransaction({ $connect() {}, $queryRawUnsafe() {} }),
+      ];
+      for (const refusal of refusals) {
+        expect(thrown(refusal)).toMatchObject({ name: 'TypeError', code: 'ERR_SQL_NOT_A_TRANSACTION' });
+      }
+
+      // The executors' other TypeErrors are about their own arguments: no code.
+      for (const misuse of [() => fromPg({} as never), () => fromKysely(mysqlKysely as never), () => fromTypeOrm(mysqlSource as never)]) {
+        const error = thrown(misuse);
+        expect(error).toBeInstanceOf(TypeError);
+        expect(isNotATransactionError(error)).toBe(false);
+      }
+    } finally {
+      await mysqlPool.end();
+      await pgPool.end();
+    }
+  });
+
+  it("is recognized by its code, whichever copy of the kit threw it, from every entry: never by a class", () => {
+    const elsewhere = Object.assign(new TypeError('Pass the tx your db.transaction() callback receives, not the database.'), { code: 'ERR_SQL_NOT_A_TRANSACTION' });
+    for (const recognizes of [isNotATransactionError, fromTheRoot, fromMysqlEntry]) {
+      expect(recognizes(elsewhere)).toBe(true);
+      expect(recognizes(new TypeError('Pass the tx your db.transaction() callback receives, not the database.'))).toBe(false);
+      expect(recognizes(Object.assign(new Error('ECONNRESET'), { code: 'ECONNRESET' }))).toBe(false);
+      expect([undefined, null, 'ERR_SQL_NOT_A_TRANSACTION'].map(recognizes)).toEqual([false, false, false]);
     }
   });
 });
