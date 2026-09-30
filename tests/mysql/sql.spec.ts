@@ -2,16 +2,19 @@
  * The helpers a MySQL store writes its statements with: SqlParams' placeholders, casts and values (whole numbers
  * checked, LIMIT written in, IN lists of strings or numbers), columns() and the readers, quoteIdentifier(), quoteTable()
  * and keyColumn(); lockKeys()'s row locks (held until the transaction ends, shared or exclusive, several keys sorted and
- * taken once, in READ COMMITTED and REPEATABLE READ transactions alike); retryOnDeadlock() on a real deadlock through
- * every client; and mysqlErrorCode() on each client's error shapes.
+ * taken once, in READ COMMITTED and REPEATABLE READ transactions alike); ensureLockRows(), which creates lock rows ahead
+ * of time so that a holder's rollback never deadlocks the transactions waiting for it; retryOnDeadlock() on a real
+ * deadlock through every client; and mysqlErrorCode() on each client's error shapes.
  */
 import { createHash } from 'node:crypto';
 import mysql from 'mysql2/promise';
 import {
   columns,
+  ensureLockRows,
   fromMysql2,
   keyColumn,
   lockKeys,
+  lockRowId,
   mysqlErrorCode,
   quoteIdentifier,
   quoteTable,
@@ -286,6 +289,111 @@ describe('lockKeys()', () => {
         }, { isolationLevel: 'read committed' }),
       ),
     );
+  });
+
+  const lockRows = async (keys: string[]) => {
+    const ids = keys.map(lockRowId);
+    const [rows] = await pool.query(`SELECT id FROM sql_locks_locks WHERE id IN (${ids.map(() => '?').join(', ')}) ORDER BY id`, ids);
+    return (rows as Array<{ id: string }>).map((row) => row.id);
+  };
+
+  it('ensureLockRows() creates the rows of keys ahead of time, each once, and names a row as lockKeys() does (lockRowId())', async () => {
+    expect(lockRowId('rolled-back')).toBe(hash('rolled-back'));
+    const [[sha]] = (await pool.query("SELECT SHA2('fixed:é', 256) AS id")) as unknown as [[{ id: string }]];
+    expect(lockRowId('fixed:é')).toBe(sha.id);
+
+    await ensureLockRows(executor, 'sql_locks', ['fixed:a', 'fixed:b', 'fixed:a']);
+    expect(await lockRows(['fixed:a', 'fixed:b'])).toEqual(['fixed:a', 'fixed:b'].map(lockRowId).sort());
+    // Again, and from three processes at once: still one row a key.
+    await ensureLockRows(executor, 'sql_locks', 'fixed:a');
+    await Promise.all([1, 2, 3].map(() => ensureLockRows(executor, 'sql_locks', ['fixed:c', 'fixed:b', 'fixed:d'])));
+    const [[{ n }]] = (await pool.query(`SELECT COUNT(*) AS n FROM sql_locks_locks WHERE id IN (?, ?, ?, ?)`, ['fixed:a', 'fixed:b', 'fixed:c', 'fixed:d'].map(lockRowId))) as unknown as [
+      [{ n: number }],
+    ];
+    expect(n).toBe(4);
+
+    // More keys than one statement takes (1,000 rows a statement).
+    const many = Array.from({ length: 2_345 }, (_, i) => `bucket:${i}`);
+    await ensureLockRows(executor, 'sql_locks', many);
+    expect(await lockRows(many)).toHaveLength(2_345);
+    await ensureLockRows(executor, 'sql_locks', []);
+  });
+
+  it("ensureLockRows() only notes a row that exists, without waiting for the transaction holding its lock, and takes no transaction", async () => {
+    await ensureLockRows(executor, 'sql_locks', 'noted');
+    const held = holder('noted');
+    await settle();
+    expect(held.acquired()).toBe(true);
+    try {
+      const started = Date.now();
+      await ensureLockRows(executor, 'sql_locks', ['noted', 'noted:new']);
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(await lockRows(['noted', 'noted:new'])).toHaveLength(2);
+    } finally {
+      held.release();
+      await held.done;
+    }
+
+    await executor.transaction(async (tx) => {
+      await expect(ensureLockRows(tx as never, 'sql_locks', 'k')).rejects.toThrow(
+        "ensureLockRows() takes the store's executor, not a transaction: it creates the rows in transactions of its own, which commit at once.",
+      );
+    });
+    await expect(ensureLockRows(executor, 'Bad-Schema', 'k')).rejects.toThrow('ensureLockRows(): invalid schema "Bad-Schema".');
+  });
+
+  /**
+   * One transaction takes a key's lock, two others wait for it, then the first rolls back: the waiters' outcomes (the
+   * MySQL error number of those that failed). All three READ COMMITTED: no REPEATABLE READ gap locks are involved.
+   */
+  async function rollBackWhileTwoWait(key: string): Promise<Array<'committed' | number | string>> {
+    const connections = await Promise.all([1, 2, 3].map(() => pool.getConnection()));
+    try {
+      const threads = await Promise.all(connections.map(async (c) => ((await c.query('SELECT CONNECTION_ID() AS id'))[0] as Array<{ id: number }>)[0]!.id));
+      for (const connection of connections) {
+        await connection.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
+        await connection.beginTransaction();
+      }
+      const [first, ...waiters] = connections;
+      await lockKeys(executor.wrapTransaction(first), 'sql_locks', key);
+      const outcomes = waiters.map(async (connection) => {
+        try {
+          await lockKeys(executor.wrapTransaction(connection), 'sql_locks', key);
+          await connection.commit();
+          return 'committed' as const;
+        } catch (error) {
+          await connection.rollback();
+          return mysqlErrorCode(error) ?? (error as Error).message;
+        }
+      });
+
+      // Both wait for the first's lock. InnoDB serves INNODB_TRX from a cache it refreshes only once it hasn't been read
+      // for 0.1 s: ask less often than that.
+      for (let waiting = 0, polls = 0; waiting < waiters.length; polls++) {
+        expect(polls).toBeLessThan(50);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const [[row]] = (await pool.query("SELECT COUNT(*) AS n FROM information_schema.INNODB_TRX WHERE trx_state = 'LOCK WAIT' AND trx_mysql_thread_id IN (?)", [
+          threads.slice(1),
+        ])) as unknown as [[{ n: number }]];
+        waiting = row.n;
+      }
+      await first!.rollback();
+      return await Promise.all(outcomes);
+    } finally {
+      for (const connection of connections) {
+        connection.release();
+      }
+    }
+  }
+
+  it("keeps the transactions waiting for a lock from deadlocking when its holder rolls back, if ensureLockRows() created its row: a row the holder's transaction created deadlocks them", async () => {
+    await ensureLockRows(executor, 'sql_locks', 'ahead-of-time');
+    expect(await rollBackWhileTwoWait('ahead-of-time')).toEqual(['committed', 'committed']);
+
+    // The control: the first lock of a key creates its row, in the transaction that then rolls back.
+    const outcomes = await rollBackWhileTwoWait(`created-in-the-transaction:${Date.now()}`);
+    expect(outcomes.every((outcome) => outcome === 'committed' || outcome === 1213)).toBe(true);
+    expect(outcomes).toContain(1213);
   });
 });
 

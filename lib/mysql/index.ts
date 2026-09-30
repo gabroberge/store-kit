@@ -16,11 +16,14 @@ export type { ResolvedStoreOptions, StoreMigration, StoreOptions, StoreReadiness
 export type { MigrationSqlOptions, MigrationStatementsOptions, StoreReadiness, StoreSchemaErrorDetails } from '../interfaces/index.js';
 
 // A store's statements: parameters as text with casts, columns read as text, identifiers and tables quoted, key
-// columns, transaction-scoped locks, the deadlock retry of a store's own transactions, MySQL's error numbers
+// columns, transaction-scoped locks (and their rows, created ahead of time), the deadlock retry of a store's own
+// transactions, MySQL's error numbers
 export {
   columns,
+  ensureLockRows,
   keyColumn,
   lockKeys,
+  lockRowId,
   mysqlErrorCode,
   quoteIdentifier,
   quoteTable,
