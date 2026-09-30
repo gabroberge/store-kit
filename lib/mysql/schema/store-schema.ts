@@ -100,6 +100,8 @@ export class StoreSchema {
   readonly latest: number;
   private readonly migrations: readonly StoreMigration[];
   private readonly createError: StoreSchemaOptions['createError'];
+  /** How long `migrate()` waits for another process's migration lock. */
+  private readonly lockWaitSeconds: number = 600;
 
   constructor(options: StoreSchemaOptions) {
     checkSchemaOptions(options, MYSQL);
@@ -182,7 +184,13 @@ export class StoreSchema {
    * statement is recorded as started and as applied, so a run that failed or crashed halfway resumes at the statement it
    * stopped at: one that failed changed nothing (MySQL's DDL is atomic) and runs again; one a crash cut off from its
    * record runs again, and MySQL's saying it's already applied (the table, column or index exists) counts as applied. A
-   * failure rejects with the package's error (`cause`: the database's). Resolves to the versions applied.
+   * failure rejects with the package's error: its message ends with the database's, its `cause` is the client's error.
+   * Resolves to the versions applied.
+   *
+   * A process waits up to 10 minutes for another's migration: `GET_LOCK()` belongs to the connection, so a lock whose
+   * release was cut off (Prisma ends an interactive transaction that outlasts the executor's `timeout`, and its
+   * connection goes back to the pool holding the lock) would otherwise hold every other process up until that
+   * connection closes. The error names the connection that holds it.
    */
   async migrate(executor: AnySqlExecutor, schema: string): Promise<number[]> {
     checkSchema(schema, this.storeName);
@@ -195,12 +203,18 @@ export class StoreSchema {
         }
 
         // GET_LOCK() names are the server's, not a database's, and at most 64 characters: the name hashes the database
-        // with the key. It waits as long as another process migrates (-1), as PostgreSQL's advisory lock does.
+        // with the key.
         const lock = `store-kit:migrate:${createHash('sha256').update(`${database}\u0000${this.packageName}:migrate:${schema}`).digest('hex').slice(0, 46)}`;
-        const [taken] = await tx.query<{ taken: string | null }>('SELECT CAST(GET_LOCK(?, -1) AS CHAR) AS taken', [lock]);
+        const [taken] = await tx.query<{ taken: string | null; holder: string | null }>(
+          'SELECT CAST(GET_LOCK(?, CAST(? AS SIGNED)) AS CHAR) AS taken, CAST(IS_USED_LOCK(?) AS CHAR) AS holder',
+          [lock, String(this.lockWaitSeconds), lock],
+        );
         if (taken?.taken !== '1') {
           throw this.createError(
-            `${this.storeName}: migrating schema "${schema}" from version ${current} to ${this.latest} failed: MySQL didn't grant its migration lock (GET_LOCK() returned ${taken?.taken ?? 'NULL'}).`,
+            taken?.taken === '0'
+              ? `${this.storeName}: migrating schema "${schema}" from version ${current} to ${this.latest} waited ${this.lockWaitSeconds} seconds for its migration lock, which MySQL connection ${taken.holder} holds: ` +
+                  `another process is migrating the schema, or one's release of the lock was cut off (MySQL releases it when that connection closes; KILL ${taken.holder} closes it).`
+              : `${this.storeName}: migrating schema "${schema}" from version ${current} to ${this.latest} failed: MySQL didn't grant its migration lock (GET_LOCK() returned ${taken?.taken ?? 'NULL'}).`,
             { schema, version: current, requiredVersion: this.latest },
           );
         }

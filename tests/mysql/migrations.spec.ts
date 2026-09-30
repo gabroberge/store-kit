@@ -111,7 +111,10 @@ describe('StoreSchema.migrate() on MySQL', () => {
     const recorder = recording(fromMysql2(pool()));
     await mysqlNoteSchema.migrate(recorder.executor, 'm_locked');
     const taken = recorder.statements.find((statement) => statement.text.includes('GET_LOCK'));
-    expect(taken).toEqual({ text: 'SELECT CAST(GET_LOCK(?, -1) AS CHAR) AS taken', params: [lockName('m_locked')] });
+    expect(taken).toEqual({
+      text: 'SELECT CAST(GET_LOCK(?, CAST(? AS SIGNED)) AS CHAR) AS taken, CAST(IS_USED_LOCK(?) AS CHAR) AS holder',
+      params: [lockName('m_locked'), '600', lockName('m_locked')],
+    });
     expect(lockName('m_locked')).toHaveLength(64);
     expect(await rows('SELECT IS_FREE_LOCK(?) AS free', [lockName('m_locked')])).toEqual([{ free: 1 }]);
 
@@ -127,6 +130,26 @@ describe('StoreSchema.migrate() on MySQL', () => {
       await holder.query('SELECT RELEASE_LOCK(?)', [lockName('m_held')]);
       expect(await migrating).toEqual([1, 2]);
     } finally {
+      holder.release();
+    }
+  });
+
+  it('gives up waiting for a lock whose release was cut off, and names the connection that holds it', async () => {
+    const hurried = mysqlNoteSchemaWith([initialMigration, archiveMigration]);
+    Object.assign(hurried, { lockWaitSeconds: 1 });
+    const holder = await database!.admin.getConnection();
+    try {
+      await holder.query('SELECT GET_LOCK(?, 0)', [lockName('m_stuck')]);
+      const [[{ id }]] = (await holder.query('SELECT CONNECTION_ID() AS id')) as unknown as [[{ id: number }]];
+      const error = await hurried.migrate(fromMysql2(pool()), 'm_stuck').catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(NoteSchemaError);
+      expect((error as Error).message).toBe(
+        `MySqlNoteStore: migrating schema "m_stuck" from version 0 to 2 waited 1 seconds for its migration lock, which MySQL connection ${id} holds: ` +
+          `another process is migrating the schema, or one's release of the lock was cut off (MySQL releases it when that connection closes; KILL ${id} closes it).`,
+      );
+      expect(await tables('m_stuck')).toEqual([]);
+    } finally {
+      await holder.query('SELECT RELEASE_LOCK(?)', [lockName('m_stuck')]);
       holder.release();
     }
   });
