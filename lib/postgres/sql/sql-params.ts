@@ -1,3 +1,5 @@
+import { inListKind } from '../../utils/params.util.js';
+
 /**
  * A statement's parameters, as a store writes them: every value goes to the driver as a string (or `null`), cast in
  * the statement (`$3::text::bigint`), and every column comes back cast to text (`columns()`), read with `toText()`,
@@ -45,14 +47,31 @@ export class SqlParams {
     return this.add(value === null || value === undefined ? null : JSON.stringify(value), 'jsonb');
   }
 
-  /** `column = value`, or `column IS NULL` for `null`: keys match exactly, and `NULL = NULL` isn't true. */
+  /**
+   * `column = value`, or `column IS NULL` for `null`: keys match exactly, and `NULL = NULL` isn't true. `column` goes
+   * into the statement as written (`state`, `j.state`), so a column named after a reserved word comes quoted
+   * (`j."order"`).
+   */
   equals(column: string, value: string | null): string {
     return value === null ? `${column} IS NULL` : `${column} = ${this.text(value)}`;
   }
 
-  /** `column IN (...)` of the given values; `FALSE` for none. */
-  in(column: string, values: readonly string[]): string {
-    return values.length === 0 ? 'FALSE' : `${column} IN (${values.map((value) => this.text(value)).join(', ')})`;
+  /**
+   * `column IN (...)` of the given values; `FALSE` for none. Strings as `text()`, whole numbers (a sequence number,
+   * an `integer` or `bigint` id) as `bigint()`: one kind a list, else a `TypeError`. `column` goes into the statement
+   * as written, as in `equals()`.
+   *
+   * ```ts
+   * `DELETE FROM ${t.jobs} WHERE ${p.in('id', ids)}`       // id IN ($1::text, $2::text)
+   * `UPDATE ${t.messages} SET ... WHERE ${p.in('seq', seqs)}` // seq IN ($3::text::bigint, $4::text::bigint)
+   * ```
+   */
+  in(column: string, values: readonly string[] | readonly number[]): string {
+    if (values.length === 0) {
+      return 'FALSE';
+    }
+    const numbers = inListKind(values) === 'number';
+    return `${column} IN (${values.map((value) => (numbers ? this.add(String(value), 'bigint') : this.text(value as string))).join(', ')})`;
   }
 
   private add(value: string | null, type: string): string {

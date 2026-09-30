@@ -1,3 +1,5 @@
+import { inListKind } from '../../utils/params.util.js';
+
 /**
  * A statement's parameters, as a MySQL store writes them: every value goes to the client as a string (or `null`) for a
  * `?` placeholder, cast in the statement where it isn't text (`CAST(? AS SIGNED)`), and every column comes back cast
@@ -16,6 +18,11 @@
  *
  * Text goes bare (`?`): compared with a key column, the column's binary collation decides, not the connection's. Write
  * no `?` in a statement but its placeholders (none in a literal or a comment), and no `??`: the executors count them.
+ *
+ * A `?` binds by position, where PostgreSQL's `$n` binds by number: call `p.x()` in the order the placeholders appear
+ * in the statement's final text. A fragment built early (`const fence = \`lease_owner = ${p.text(owner)}\``) and
+ * placed after one built later binds each value to the other's `?`, and the executors' count can't see it: build each
+ * fragment where it goes, or give it a `SqlParams` of its own and concatenate the values in the text's order.
  */
 export class SqlParams {
   /** What the statement's placeholders take, in order: pass it as the statement's `params`. */
@@ -47,14 +54,31 @@ export class SqlParams {
     return this.add(value === null || value === undefined ? null : JSON.stringify(value), 'CAST(? AS JSON)');
   }
 
-  /** `column = ?`, or `column IS NULL` for `null`: keys match exactly, and `NULL = NULL` isn't true. */
+  /**
+   * `column = ?`, or `column IS NULL` for `null`: keys match exactly, and `NULL = NULL` isn't true. `column` goes into
+   * the statement as written (`state`, `j.state`), so a column named after a reserved word (MySQL 8 reserves `key`,
+   * `rank`, `signal`...) comes quoted: `` p.equals(`w.${quoteIdentifier('key')}`, key) ``.
+   */
   equals(column: string, value: string | null): string {
     return value === null ? `${column} IS NULL` : `${column} = ${this.text(value)}`;
   }
 
-  /** `column IN (?, ...)` of the given values; `FALSE` for none. */
-  in(column: string, values: readonly string[]): string {
-    return values.length === 0 ? 'FALSE' : `${column} IN (${values.map((value) => this.text(value)).join(', ')})`;
+  /**
+   * `column IN (?, ...)` of the given values; `FALSE` for none. Strings go bare (`?`), whole numbers (a sequence
+   * number, a BIGINT id) as `CAST(? AS SIGNED)`: one kind a list, else a `TypeError`. `column` goes into the statement
+   * as written, as in `equals()`.
+   *
+   * ```ts
+   * `DELETE FROM ${t.jobs} WHERE ${p.in('id', ids)}`       // id IN (?, ?)
+   * `UPDATE ${t.messages} SET ... WHERE ${p.in('seq', seqs)}` // seq IN (CAST(? AS SIGNED), CAST(? AS SIGNED))
+   * ```
+   */
+  in(column: string, values: readonly string[] | readonly number[]): string {
+    if (values.length === 0) {
+      return 'FALSE';
+    }
+    const numbers = inListKind(values) === 'number';
+    return `${column} IN (${values.map((value) => (numbers ? this.add(String(value), 'CAST(? AS SIGNED)') : this.text(value as string))).join(', ')})`;
   }
 
   /**

@@ -6,7 +6,7 @@
 import pg from 'pg';
 import { advisoryLock, columns, fromPg, quoteSchema, SqlParams, toBool, toInt, toJson, toText, type SqlTransaction } from '../../lib/postgres/index.js';
 import { endPool } from '../support/postgres.js';
-import { onPostgres, testDatabase } from './support.js';
+import { onPostgres, openPglite, testDatabase } from './support.js';
 
 const { database, reason } = await testDatabase('sql');
 
@@ -37,6 +37,34 @@ describe('SqlParams', () => {
     expect(q.in('state', [])).toBe('FALSE');
     expect(q.in('state', ['waiting', 'active'])).toBe('state IN ($2::text, $3::text)');
     expect(q.values).toEqual(['g1', 'waiting', 'active']);
+  });
+
+  it('writes an IN list of whole numbers as bigints (one kind a list), which finds the rows of integer and bigint columns', async () => {
+    const p = new SqlParams();
+    expect(p.in('m.seq', [3, 1_790_000_000_000, -2])).toBe('m.seq IN ($1::text::bigint, $2::text::bigint, $3::text::bigint)');
+    expect(p.in('m.seq', [] as number[])).toBe('FALSE');
+    expect(p.values).toEqual(['3', '1790000000000', '-2']);
+    expect(() => new SqlParams().in('seq', [1, 'a'] as never)).toThrow('SqlParams.in() takes strings or numbers, not both: a column is compared with values of its own type.');
+    expect(() => new SqlParams().in('id', ['a', 1] as never)).toThrow('SqlParams.in() takes strings or numbers, not both');
+    for (const value of [1.5, Number.NaN, 2 ** 53]) {
+      expect(() => new SqlParams().in('seq', [1, value])).toThrow(`SqlParams.in() takes whole numbers (or strings), not ${String(value)}.`);
+    }
+
+    const pglite = await openPglite();
+    try {
+      const r = new SqlParams();
+      const rows = await pglite.executor.query(
+        `SELECT ${columns(['n', 'big'], 't')} FROM (VALUES (1::integer, 1790000000000::bigint), (2, 2), (3, 3)) AS t(n, big)
+WHERE ${r.in('t.n', [1, 3, 4])} AND ${r.in('t.big', [1_790_000_000_000, 3])} ORDER BY t.n`,
+        r.values,
+      );
+      expect(rows).toEqual([
+        { n: '1', big: '1790000000000' },
+        { n: '3', big: '3' },
+      ]);
+    } finally {
+      await pglite.close();
+    }
   });
 });
 

@@ -1,9 +1,9 @@
 /**
  * The helpers a MySQL store writes its statements with: SqlParams' placeholders, casts and values (whole numbers
- * checked, LIMIT written in), columns() and the readers, quoteIdentifier(), quoteTable() and keyColumn(); lockKeys()'s
- * row locks (held until the transaction ends, shared or exclusive, several keys sorted and taken once, in READ
- * COMMITTED and REPEATABLE READ transactions alike); retryOnDeadlock() on a real deadlock through every client; and
- * mysqlErrorCode() on each client's error shapes.
+ * checked, LIMIT written in, IN lists of strings or numbers), columns() and the readers, quoteIdentifier(), quoteTable()
+ * and keyColumn(); lockKeys()'s row locks (held until the transaction ends, shared or exclusive, several keys sorted and
+ * taken once, in READ COMMITTED and REPEATABLE READ transactions alike); retryOnDeadlock() on a real deadlock through
+ * every client; and mysqlErrorCode() on each client's error shapes.
  */
 import { createHash } from 'node:crypto';
 import mysql from 'mysql2/promise';
@@ -51,6 +51,42 @@ describe('SqlParams on MySQL', () => {
     expect(q.in('state', [])).toBe('FALSE');
     expect(q.in('state', ['waiting', 'active'])).toBe('state IN (?, ?)');
     expect(q.values).toEqual(['g1', 'waiting', 'active']);
+  });
+
+  it('writes an IN list of whole numbers as CAST(? AS SIGNED), one kind a list, in the order of the values', () => {
+    const p = new SqlParams();
+    expect(p.in('m.seq', [3, 1_790_000_000_000, -2])).toBe('m.seq IN (CAST(? AS SIGNED), CAST(? AS SIGNED), CAST(? AS SIGNED))');
+    expect(p.in('m.seq', [] as number[])).toBe('FALSE');
+    expect(p.values).toEqual(['3', '1790000000000', '-2']);
+    expect(() => new SqlParams().in('seq', [1, 'a'] as never)).toThrow('SqlParams.in() takes strings or numbers, not both: a column is compared with values of its own type.');
+    expect(() => new SqlParams().in('id', ['a', 1] as never)).toThrow('SqlParams.in() takes strings or numbers, not both');
+    for (const value of [1.5, Number.NaN, 2 ** 63]) {
+      expect(() => new SqlParams().in('seq', [1, value])).toThrow(`SqlParams.in() takes whole numbers (or strings), not ${String(value)}.`);
+    }
+  });
+
+  describe('on the server', () => {
+    onMysql(reason);
+
+    it('finds the rows of INT and BIGINT columns by an IN list of numbers, through every client', async () => {
+      for (const factory of clients) {
+        const client = await factory.open(database!.url);
+        try {
+          const r = new SqlParams();
+          const rows = await client.executor.query(
+            `SELECT ${columns(['n', 'big'], 't')} FROM (SELECT CAST(1 AS SIGNED) AS n, CAST(1790000000000 AS SIGNED) AS big UNION ALL SELECT 2, 2 UNION ALL SELECT 3, 3) AS t
+WHERE ${r.in('t.n', [1, 3, 4])} AND ${r.in('t.big', [1_790_000_000_000, 3])} ORDER BY t.n`,
+            r.values,
+          );
+          expect(rows, factory.name).toEqual([
+            { n: '1', big: '1790000000000' },
+            { n: '3', big: '3' },
+          ]);
+        } finally {
+          await client.close();
+        }
+      }
+    });
   });
 
   it('refuses a number that isn\'t whole, which MySQL would round or wrap without an error, and writes LIMIT counts into the statement', () => {
