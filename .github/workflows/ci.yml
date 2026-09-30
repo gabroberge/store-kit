@@ -49,10 +49,44 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm install
-      - name: Generate the Prisma client
-        # The executors' tests run fromPrisma() on it; the tests' global setup does the same.
+      - name: Generate the Prisma clients
+        # The executors' tests run fromPrisma() on them; the tests' global setups do the same.
         run: npm run generate:prisma
       - name: Typecheck
         run: npx tsc -p tsconfig.json --noEmit
       - name: e2e tests
         run: npm run test:e2e
+
+  e2e-mysql:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # MySQL 8.4 LTS and the current innovation release: the versions the MySQL stores support.
+        mysql: ['8.4', '9.7.0']
+    services:
+      mysql:
+        image: mysql:${{ matrix.mysql }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SQL_TEST_MYSQL_URL: mysql://root:root@127.0.0.1:3306
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm install
+      - name: Generate the Prisma clients
+        run: npm run generate:prisma
+      - name: e2e tests on MySQL
+        run: npx vitest run --project mysql

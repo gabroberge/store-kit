@@ -23,9 +23,9 @@
 
 ## Description
 
-The building blocks of the first-party SQL stores that [Nest](https://github.com/nestjs/nest)'s packages ship (`PostgresWorkflowStore` in `@nestjs/workflows/postgres`, and more to come): executors that run a store's SQL through the client the application already has (node-postgres, Drizzle, TypeORM, Prisma, Kysely) and join its transactions, a store's versioned migrations with their SQL and its command line, the readiness a store awaits before its statements, and helpers for writing them.
+The building blocks of the first-party SQL stores that [Nest](https://github.com/nestjs/nest)'s packages ship (`PostgresWorkflowStore` in `@nestjs/workflows/postgres`, and more to come, on PostgreSQL and MySQL): executors that run a store's SQL through the client the application already has (node-postgres or mysql2, Drizzle, TypeORM, Prisma, Kysely) and join its transactions, a store's versioned migrations with their SQL and its command line, the readiness a store awaits before its statements, and helpers for writing them.
 
-Applications don't install or import it: a package depends on it, and its `/postgres` subpath re-exports the executors and their types.
+Applications don't install or import it: a package depends on it, and its `/postgres` and `/mysql` subpaths re-export the executors and their types.
 
 ## Installation
 
@@ -37,8 +37,9 @@ $ npm i --save @nestjs/store-kit
 
 ## Entries
 
-- `@nestjs/store-kit`: what every dialect shares: the executor types (`SqlExecutor`, `SqlTransaction`, `SqlTransactionOptions`, `SqlIsolationLevel`) and `runStoreCli()`, a package's command.
+- `@nestjs/store-kit`: what every dialect shares: the executor types (`SqlExecutor`, `SqlTransaction`, `SqlTransactionOptions`, `SqlIsolationLevel`, `SqlExecuteResult`), the readers of a column's text (`toText`/`toInt`/`toBool`/`toJson`) and `runStoreCli()`, a package's command.
 - `@nestjs/store-kit/postgres`: the executors (`fromPg`, `fromDrizzle`, `fromTypeOrm`, `fromPrisma`, `fromKysely`), `StoreSchema` (migrations, their SQL, a store's options and readiness), the statement helpers (`SqlParams`, `columns`, `toText`/`toInt`/`toBool`/`toJson`, `quoteSchema`, `advisoryLock`) and `assertReadCommittedTransaction()`.
+- `@nestjs/store-kit/mysql`: the same for MySQL 8.4 LTS and 9.x: the executors (`fromMysql2`, `fromDrizzle`, `fromTypeOrm`, `fromPrisma`, `fromKysely`), `StoreSchema` (a store's tables in the connection's database as `<schema>_<table>`, migrations applied statement by statement under `GET_LOCK()` and resumed where a failed run stopped), and the statement helpers (`SqlParams`, `columns`, `toText`/`toInt`/`toBool`/`toJson`, `quoteIdentifier`, `quoteTable`, `keyColumn`, `lockKeys`, `retryOnDeadlock`, `mysqlErrorCode`).
 - `@nestjs/store-kit/testing`: `sqlExecutorContract()`, for an executor of another client.
 
 ## A store in brief
@@ -92,7 +93,7 @@ process.exitCode = await runStoreCli([outboxSchema], process.argv.slice(2));
 
 ## Tests
 
-`npm run test:e2e` runs the suite on PGlite, and on PostgreSQL through every executor: `SQL_TEST_PG_URL` (`docker compose up -d` starts one on port 55432), else a throwaway cluster from local PostgreSQL binaries, else those tests are skipped with the reason. Test databases are named `skit_<host>_...` and swept when their process is gone.
+`npm run test:e2e` runs the suite on PGlite, and on PostgreSQL through every executor: `SQL_TEST_PG_URL` (`docker compose up -d` starts one on port 55432), else a throwaway cluster from local PostgreSQL binaries, else those tests are skipped with the reason. The MySQL tests (a vitest project of their own, two files at a time, after the PostgreSQL ones) run on `SQL_TEST_MYSQL_URL` (`mysql://root:<password>@127.0.0.1:3306`), else they are skipped with the reason. Test databases are named `skit_<host>_...` on both servers and swept when their process is gone.
 
 ## Support
 
