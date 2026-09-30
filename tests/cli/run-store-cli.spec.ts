@@ -2,17 +2,20 @@
  * `runStoreCli()`, the command a package's bin runs (tests/fixtures/notes' `nest-notes`): `sql` prints what `sql()`
  * does, `migrate` applies the migrations, `status` exits with 1 while the schema is behind; `migrate` and `status`
  * reach the database of the URL's dialect, `sql` the one `--dialect` names, and every misuse says what to do instead.
+ * The usage, word for word, for a package with one store and for one with a store of each dialect.
  */
 import { runStoreCli, type StoreCliIo } from '../../lib/index.js';
+import type { CliStoreSchema } from '../../lib/interfaces/index.js';
 import { noteSchema, noteSchemaOptions } from '../fixtures/notes/note.schema.js';
+import { mysqlNoteSchema } from '../fixtures/notes/mysql-note.schema.js';
 import { StoreSchema } from '../../lib/postgres/index.js';
 import { onPostgres, testDatabase } from '../postgres/support.js';
 
 const { database, reason } = await testDatabase('cli');
 
-async function run(argv: string[], env: StoreCliIo['env'] = {}) {
+async function run(argv: string[], env: StoreCliIo['env'] = {}, schemas: CliStoreSchema[] = [noteSchema]) {
   const output = { out: '', err: '' };
-  const code = await runStoreCli([noteSchema], argv, { out: (text) => (output.out += text), err: (text) => (output.err += text), env });
+  const code = await runStoreCli(schemas, argv, { out: (text) => (output.out += text), err: (text) => (output.err += text), env });
   return { code, ...output };
 }
 
@@ -46,6 +49,51 @@ Options:
   --from <version>   sql: the version to start from. Default: 0 (a new database)
   --to <version>     sql: the version to end at. Default: the latest
   --dialect <name>   sql: the database it's for (postgres). Default: postgres
+  --statement-breakpoints
+                     sql: separate the statements with drizzle-kit's "--> statement-breakpoint",
+                     for a custom drizzle-kit migration (drizzle-kit generate --custom)
+`);
+  });
+
+  it("prints the usage of a package with a store of each dialect word for word: one line names both stores, over the commands", async () => {
+    expect((await run(['--help'], {}, [noteSchema, mysqlNoteSchema])).out).toBe(`Usage: nest-notes <command> [options]
+
+PostgresNoteStore's schema (@nestjs/notes/postgres) or MySqlNoteStore's (@nestjs/notes/mysql):
+
+  migrate   Apply the migrations the schema hasn't had yet (PostgreSQL: one transaction, under an advisory lock;
+            MySQL: one statement at a time, under GET_LOCK(), resuming where a failed run stopped)
+  status    Print the schema's version and the one this version of @nestjs/notes needs;
+            exit with 1 while it is behind
+  sql       Print the migrations' SQL, for your own migration tool (no database needed)
+
+Options:
+  --url <url>        The database (postgres://... or mysql://...). Default: $DATABASE_URL
+  --schema <name>    The store's schema. Default: nest_notes
+  --from <version>   sql: the version to start from. Default: 0 (a new database)
+  --to <version>     sql: the version to end at. Default: the latest
+  --dialect <name>   sql: the database it's for (postgres, mysql). Default: postgres
+  --statement-breakpoints
+                     sql: separate the statements with drizzle-kit's "--> statement-breakpoint",
+                     for a custom drizzle-kit migration (drizzle-kit generate --custom)
+`);
+  });
+
+  it("prints a MySQL package's usage word for word, its one store over the commands", async () => {
+    expect((await run(['--help'], {}, [mysqlNoteSchema])).out).toBe(`Usage: nest-notes <command> [options]
+
+MySqlNoteStore's schema (@nestjs/notes/mysql):
+
+  migrate   Apply the migrations the schema hasn't had yet (one statement at a time, under GET_LOCK(), resuming where a failed run stopped)
+  status    Print the schema's version and the one this version of @nestjs/notes needs;
+            exit with 1 while it is behind
+  sql       Print the migrations' SQL, for your own migration tool (no database needed)
+
+Options:
+  --url <url>        The database (mysql://...). Default: $DATABASE_URL
+  --schema <name>    The store's schema. Default: nest_notes
+  --from <version>   sql: the version to start from. Default: 0 (a new database)
+  --to <version>     sql: the version to end at. Default: the latest
+  --dialect <name>   sql: the database it's for (mysql). Default: mysql
   --statement-breakpoints
                      sql: separate the statements with drizzle-kit's "--> statement-breakpoint",
                      for a custom drizzle-kit migration (drizzle-kit generate --custom)

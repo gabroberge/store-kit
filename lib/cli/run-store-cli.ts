@@ -103,7 +103,10 @@ export async function runStoreCli(schemas: readonly CliStoreSchema[], argv: read
 
 function usageOf(schemas: readonly CliStoreSchema[]): string {
   const [{ command, packageName, defaultSchema }] = schemas;
-  const stores = schemas.map((schema) => `${schema.storeName}'s schema (${schema.packageName}/${schema.dialect}):`).join('\n');
+  // One line over the commands, which serve every store: "PostgresOutboxStore's schema (@nestjs/outbox/postgres):",
+  // or "... (@nestjs/outbox/postgres) or MySqlOutboxStore's (@nestjs/outbox/mysql):" for a package with both.
+  const named = schemas.map((schema, i) => `${schema.storeName}'s${i === 0 ? ' schema' : ''} (${schema.packageName}/${schema.dialect})`);
+  const stores = `${named.length > 1 ? `${named.slice(0, -1).join(', ')} or ${named.at(-1)}` : named[0]}:`;
   // A PostgreSQL package's usage reads as it did before the kit knew MySQL.
   const mysql = schemas.some((schema) => schema.dialect === 'mysql');
   const postgres = schemas.some((schema) => schema.dialect === 'postgres');

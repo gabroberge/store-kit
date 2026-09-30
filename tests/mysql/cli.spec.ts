@@ -25,7 +25,9 @@ describe('runStoreCli() and MySQL', () => {
   it("prints a package's usage with how each of its dialects migrates, and the URLs it takes", async () => {
     const help = await run(both, ['--help']);
     expect(help).toMatchObject({ code: 0, err: '' });
-    expect(help.out).toContain("PostgresNoteStore's schema (@nestjs/notes/postgres):\nMySqlNoteStore's schema (@nestjs/notes/mysql):\n");
+    // One line names both stores, right over the commands (tests/cli/run-store-cli.spec.ts has the whole text).
+    expect(help.out).toContain("\n\nPostgresNoteStore's schema (@nestjs/notes/postgres) or MySqlNoteStore's (@nestjs/notes/mysql):\n\n  migrate   ");
+    expect(help.out.match(/NoteStore's/g)).toHaveLength(2);
     expect(help.out).toContain(
       "  migrate   Apply the migrations the schema hasn't had yet (PostgreSQL: one transaction, under an advisory lock;\n" +
         '            MySQL: one statement at a time, under GET_LOCK(), resuming where a failed run stopped)\n',
