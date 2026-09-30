@@ -115,6 +115,9 @@ function isAlive(pid: number): boolean {
 async function withConnection<T>(connectionString: string, work: (connection: mysql.Connection) => Promise<T>): Promise<T> {
   const connection = await mysql.createConnection({ uri: connectionString, connectTimeout: 5_000 });
   try {
+    // DROP DATABASE waits for the transactions that hold its tables, a year by default: a leaked one fails the
+    // teardown after 30 seconds instead.
+    await connection.query('SET SESSION lock_wait_timeout = 30');
     return await work(connection);
   } finally {
     await connection.end();

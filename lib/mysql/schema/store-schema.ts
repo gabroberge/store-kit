@@ -22,6 +22,9 @@ import { SqlParams } from '../sql/sql-params.js';
 import { MYSQL } from './mysql-dialect.js';
 import { checkServer } from './server-check.js';
 
+/** ER_LOCK_WAIT_TIMEOUT: a statement waited `lock_wait_timeout` for a metadata lock (or a row lock), and gave up. */
+const LOCK_WAIT_TIMEOUT = 1205;
+
 /** The first word of the statements a MySQL migration may hold: DDL, which MySQL commits on its own. */
 const DDL = /^(CREATE|ALTER|DROP)\b/i;
 
@@ -102,6 +105,12 @@ export class StoreSchema {
   private readonly createError: StoreSchemaOptions['createError'];
   /** How long `migrate()` waits for another process's migration lock. */
   private readonly lockWaitSeconds: number = 600;
+  /**
+   * How a migration's DDL waits for the transactions that hold its table (MySQL's metadata lock): each wait this many
+   * seconds (the session's `lock_wait_timeout`, MySQL's default a year), this many times, pausing a second more each
+   * time. While DDL waits, MySQL queues every new query on the table behind it: the waits are short.
+   */
+  private readonly metadataLockWait = { seconds: 10, attempts: 3, pauseMs: 1_000 };
 
   constructor(options: StoreSchemaOptions) {
     checkSchemaOptions(options, MYSQL);
@@ -191,6 +200,11 @@ export class StoreSchema {
    * release was cut off (Prisma ends an interactive transaction that outlasts the executor's `timeout`, and its
    * connection goes back to the pool holding the lock) would otherwise hold every other process up until that
    * connection closes. The error names the connection that holds it.
+   *
+   * A DDL statement waits for every open transaction that has used its table (MySQL's metadata lock), and meanwhile
+   * MySQL queues the table's new queries behind it: the connection's `lock_wait_timeout` is 10 seconds while it
+   * migrates (restored after, before it goes back to the application's pool), a statement that timed out waits again
+   * twice, and then the migration fails with the package's error, having applied nothing of that statement.
    */
   async migrate(executor: AnySqlExecutor, schema: string): Promise<number[]> {
     checkSchema(schema, this.storeName);
@@ -221,7 +235,18 @@ export class StoreSchema {
         try {
           // The executor's transaction ends here: each statement below commits on its own, as MySQL's DDL does anyway.
           await tx.query('COMMIT');
-          return await this.applyPending(tx, schema);
+          // DDL waits for every transaction that has used its table, a year by default: the connection's wait is short
+          // while it migrates, and the application's own again before the connection goes back to its pool.
+          const [session] = await tx.query<{ wait: string }>('SELECT CAST(@@session.lock_wait_timeout AS CHAR) AS wait');
+          const previous = session?.wait;
+          await tx.query(`SET SESSION lock_wait_timeout = ${wholeSeconds(this.metadataLockWait.seconds)}`);
+          try {
+            return await this.applyPending(tx, schema);
+          } finally {
+            if (previous !== undefined && /^\d+$/.test(previous)) {
+              await tx.query(`SET SESSION lock_wait_timeout = ${previous}`).catch(() => undefined);
+            }
+          }
         } finally {
           await tx.query('DO RELEASE_LOCK(?)', [lock]).catch(() => undefined);
         }
@@ -294,8 +319,29 @@ export class StoreSchema {
         { schema, version: reached, requiredVersion: this.latest, cause },
       );
 
+    // A statement that timed out waiting for its table's metadata lock changed nothing: it waits again, a few times.
+    const { attempts, pauseMs, seconds } = this.metadataLockWait;
+    const ddl = async (statement: string) => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await tx.query(statement);
+          return;
+        } catch (error) {
+          if (mysqlErrorCode(error) !== LOCK_WAIT_TIMEOUT || attempt >= attempts) {
+            throw error;
+          }
+          await new Promise((resolve) => setTimeout(resolve, pauseMs * attempt));
+        }
+      }
+    };
+    const blocked = (error: unknown) =>
+      mysqlErrorCode(error) === LOCK_WAIT_TIMEOUT
+        ? `. A transaction that has used the table holds it (MySQL's metadata lock), and the statement waited for it ${attempts} times, ${seconds} s each, then gave up, applying nothing: ` +
+          'migrating again, once that transaction ends, resumes at it.'
+        : '. The statements before it are applied, and migrating again resumes at it.';
+
     for (const statement of this.bookkeeping(schema)) {
-      await tx.query(statement).catch((error: unknown) => {
+      await ddl(statement).catch((error: unknown) => {
         throw fail("failed creating the kit's tables", version, error);
       });
     }
@@ -318,7 +364,7 @@ export class StoreSchema {
           await this.record(tx, migrations, migration.version, { started: index + 1 });
         }
         try {
-          await tx.query(statements[index]!);
+          await ddl(statements[index]!);
         } catch (error) {
           const code = mysqlErrorCode(error);
           if (!uncertain || code === undefined || !ALREADY_APPLIED.has(code)) {
@@ -327,7 +373,7 @@ export class StoreSchema {
             if (code !== undefined) {
               await this.record(tx, migrations, migration.version, { started: index }).catch(() => undefined);
             }
-            throw fail(`stopped ${position}`, migration.version - 1, error, '. The statements before it are applied, and migrating again resumes at it.');
+            throw fail(`stopped ${position}`, migration.version - 1, error, blocked(error));
           }
         }
 
@@ -384,4 +430,12 @@ export class StoreSchema {
   private table(schema: string, table: 'migrations' | 'locks'): string {
     return tableName(schema, table, this.storeName);
   }
+}
+
+/** `seconds` for a statement's text, checked: `SET` takes a number, not a string parameter. */
+function wholeSeconds(seconds: number): number {
+  if (!Number.isSafeInteger(seconds) || seconds < 1) {
+    throw new TypeError(`A lock wait is a whole number of seconds from 1, not ${String(seconds)}.`);
+  }
+  return seconds;
 }

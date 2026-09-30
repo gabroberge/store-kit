@@ -26,10 +26,14 @@ export const initialMigration: StoreMigration = {
   ],
 };
 
+/** A later migration changes tables in use: online DDL, which fails rather than copy or lock the table if it can't. */
 export const archiveMigration: StoreMigration = {
   version: 2,
   name: 'archive',
-  up: (t) => [`ALTER TABLE ${t('notes')} ADD COLUMN archived boolean NOT NULL DEFAULT false`, `CREATE INDEX notes_archived ON ${t('notes')} (archived, created_at)`],
+  up: (t) => [
+    `ALTER TABLE ${t('notes')} ADD COLUMN archived boolean NOT NULL DEFAULT false, ALGORITHM=INSTANT`,
+    `CREATE INDEX notes_archived ON ${t('notes')} (archived, created_at) ALGORITHM=INPLACE LOCK=NONE`,
+  ],
 };
 
 export const mysqlNoteSchemaOptions: StoreSchemaOptions = {

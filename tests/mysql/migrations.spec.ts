@@ -282,6 +282,38 @@ describe('StoreSchema.migrate() on MySQL', () => {
     }
   });
 
+  it("fails clearly within its short waits when a transaction holds a table it alters, applies nothing of that statement, restores the connection's lock_wait_timeout, and resumes once that transaction ends", async () => {
+    await mysqlNoteSchemaWith([initialMigration]).migrate(fromMysql2(pool()), 'm_blocked');
+    const hurried = mysqlNoteSchemaWith([initialMigration, archiveMigration]);
+    Object.assign(hurried, { metadataLockWait: { seconds: 1, attempts: 2, pauseMs: 10 } });
+    const migrating = pool();
+    const holder = await database!.admin.getConnection();
+    try {
+      // An application's transaction that has used the store's table, still open.
+      await holder.beginTransaction();
+      await holder.query('SELECT COUNT(*) AS n FROM m_blocked_notes');
+      const started = Date.now();
+      const error = await hurried.migrate(fromMysql2(migrating), 'm_blocked').catch((e: unknown) => e);
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(error).toBeInstanceOf(NoteSchemaError);
+      expect(error).toMatchObject({ schema: 'm_blocked', version: 1, requiredVersion: 2, cause: { errno: 1205 } });
+      expect((error as Error).message).toBe(
+        'MySqlNoteStore: migrating schema "m_blocked" from version 1 to 2 stopped at migration 2 (archive), statement 1 of 2: Lock wait timeout exceeded; try restarting transaction. ' +
+          "A transaction that has used the table holds it (MySQL's metadata lock), and the statement waited for it 2 times, 1 s each, then gave up, applying nothing: " +
+          'migrating again, once that transaction ends, resumes at it.',
+      );
+      expect(await rows('SELECT started, applied, applied_at FROM m_blocked_migrations WHERE version = 2')).toEqual([{ started: 0, applied: 0, applied_at: null }]);
+      expect(await rows("SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'm_blocked_notes' AND COLUMN_NAME = 'archived'")).toEqual([]);
+      // The pool's one connection has the application's wait again.
+      expect((await migrating.query('SELECT @@session.lock_wait_timeout = @@global.lock_wait_timeout AS restored'))[0]).toEqual([{ restored: 1 }]);
+      await holder.commit();
+    } finally {
+      holder.release();
+    }
+    expect(await hurried.migrate(fromMysql2(migrating), 'm_blocked')).toEqual([2]);
+    expect((await migrating.query('SELECT @@session.lock_wait_timeout = @@global.lock_wait_timeout AS restored'))[0]).toEqual([{ restored: 1 }]);
+  });
+
   it("gives every table a primary key: the kit's and the store's migrate with sql_require_primary_key on, where a table without one fails", async () => {
     const strict = pool();
     strict.on('connection', (connection) => {
@@ -316,8 +348,8 @@ describe('a MySQL schema behind the store, and one ahead of it', () => {
     );
 
     expect(mysqlNoteSchema.statements({ schema: 'm_behind', from: 1 })).toEqual([
-      'ALTER TABLE `m_behind_notes` ADD COLUMN archived boolean NOT NULL DEFAULT false',
-      'CREATE INDEX notes_archived ON `m_behind_notes` (archived, created_at)',
+      'ALTER TABLE `m_behind_notes` ADD COLUMN archived boolean NOT NULL DEFAULT false, ALGORITHM=INSTANT',
+      'CREATE INDEX notes_archived ON `m_behind_notes` (archived, created_at) ALGORITHM=INPLACE LOCK=NONE',
       "INSERT INTO `m_behind_migrations` (version, name, applied_at) VALUES (2, 'archive', UNIX_TIMESTAMP() * 1000)",
     ]);
     expect(await mysqlNoteSchema.migrate(executor, 'm_behind')).toEqual([2]);

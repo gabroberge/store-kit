@@ -54,6 +54,23 @@ describe.each(targets)('$name', ({ open }) => {
     await expect(client.executor.query('SELECT ?? FROM orders', ['id'])).rejects.toThrow("A MySQL statement can't hold ??");
   });
 
+  it("reads an AUTO_INCREMENT id with LAST_INSERT_ID() in the insert's transaction, which keeps to its connection", async () => {
+    const table = `serials_${client.name.replace(/\W+/g, '_').toLowerCase()}`.slice(0, 60);
+    await client.executor.execute(`CREATE TABLE IF NOT EXISTS ${table} (id bigint NOT NULL AUTO_INCREMENT PRIMARY KEY, name varchar(32) NOT NULL)`);
+    const ids = await client.executor.transaction(async (tx) => {
+      const read = async () => (await tx.query<{ id: string }>('SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id'))[0]!.id;
+      await tx.execute(`INSERT INTO ${table} (name) VALUES (?)`, ['first']);
+      const first = await read();
+      await tx.execute(`INSERT INTO ${table} (name) VALUES (?)`, ['second']);
+      return [first, await read()];
+    });
+    expect(await client.executor.query(`SELECT CAST(id AS CHAR) AS id, name FROM ${table} ORDER BY ${table}.id`)).toEqual([
+      { id: ids[0], name: 'first' },
+      { id: ids[1], name: 'second' },
+    ]);
+    await client.executor.execute(`DROP TABLE ${table}`);
+  });
+
   it("surfaces MySQL's error number, a duplicate key's in the application's transaction too, which goes on and commits", async () => {
     const duplicate = await client.executor.execute("INSERT INTO orders (id, status) VALUES (?, 'placed'), (?, 'placed')", ['dup', 'dup']).catch((e: unknown) => e);
     expect(mysqlErrorCode(duplicate)).toBe(1062);

@@ -235,6 +235,10 @@ export async function testDatabase(name: string): Promise<{ database: TestDataba
 
   const { name: database, url } = await server.createDatabase(name);
   const admin = mysql.createPool({ uri: url, connectionLimit: 2 });
+  // A statement the tests run from outside waits 30 seconds for a table's metadata lock, not a year.
+  admin.on('connection', (connection) => {
+    connection.query('SET SESSION lock_wait_timeout = 30');
+  });
   await admin.query(ORDERS_DDL);
   afterAll(async () => {
     await admin.end();
