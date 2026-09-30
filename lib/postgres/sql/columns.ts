@@ -13,47 +13,5 @@ export function columns(names: readonly string[], alias?: string): string {
   return names.map((name) => `${alias ? `${alias}.` : ''}${name}::text AS ${name}`).join(', ');
 }
 
-/**
- * A text column as a store reads it (`columns()`): `null` for SQL `NULL`.
- *
- * ```ts
- * const leaseOwner = toText(row.lease_owner);
- * ```
- */
-export function toText(value: unknown): string | null {
-  return value === null || value === undefined ? null : String(value);
-}
-
-/**
- * An `integer` or `bigint` column read as text (`columns()`): a number, or `null` for SQL `NULL`. A `bigint` past
- * `Number.MAX_SAFE_INTEGER` loses precision: keep such values (ids, counters) as text.
- *
- * ```ts
- * const runAt = toInt(row.run_at);
- * ```
- */
-export function toInt(value: unknown): number | null {
-  return value === null || value === undefined ? null : Number(value);
-}
-
-/**
- * A `boolean` column read as text (`columns()`).
- *
- * ```ts
- * const paused = toBool(row.paused);
- * ```
- */
-export function toBool(value: unknown): boolean {
-  return value === true || value === 'true';
-}
-
-/**
- * A `jsonb` column read as text (`columns()`): the value, or `null` for SQL `NULL`.
- *
- * ```ts
- * const payload = toJson(row.payload);
- * ```
- */
-export function toJson(value: unknown): unknown {
-  return value === null || value === undefined ? null : JSON.parse(String(value));
-}
+// The readers of a column's text are the same on every dialect.
+export { toBool, toInt, toJson, toText } from '../../sql/converters.js';

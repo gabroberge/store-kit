@@ -25,14 +25,14 @@ export class SqlParams {
     return this.add(value, 'text');
   }
 
-  /** `$n::text::integer`. */
+  /** `$n::text::integer`. Throws a `TypeError` for anything but a whole number or `null`. */
   int(value: number | null): string {
-    return this.add(value === null ? null : String(value), 'integer');
+    return this.add(wholeNumber(value, 'int'), 'integer');
   }
 
-  /** `$n::text::bigint`: epoch milliseconds, and any integer past `integer`'s range. */
+  /** `$n::text::bigint`: epoch milliseconds, and any integer past `integer`'s range. Whole numbers only, as `int()`. */
   bigint(value: number | null): string {
-    return this.add(value === null ? null : String(value), 'bigint');
+    return this.add(wholeNumber(value, 'bigint'), 'bigint');
   }
 
   /** `$n::text::boolean`. */
@@ -59,4 +59,18 @@ export class SqlParams {
     this.values.push(value);
     return type === 'text' ? `$${this.values.length}::text` : `$${this.values.length}::text::${type}`;
   }
+}
+
+/**
+ * `value` as text, after checking it's a whole number: a fraction or `NaN` would fail the statement's cast with an
+ * obscure error, and a number past `Number.MAX_SAFE_INTEGER` isn't the integer it looks like.
+ */
+function wholeNumber(value: number | null, method: string): string | null {
+  if (value === null) {
+    return null;
+  }
+  if (!Number.isSafeInteger(value)) {
+    throw new TypeError(`SqlParams.${method}() takes a whole number (or null), not ${String(value)}.`);
+  }
+  return String(value);
 }

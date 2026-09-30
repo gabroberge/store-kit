@@ -25,6 +25,12 @@ describe('SqlParams', () => {
     ]);
     expect(p.values).toEqual(['a', '7', '1790000000000', 'false', '{"a":1}', null, null, null]);
 
+    for (const value of [1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+      expect(() => new SqlParams().int(value)).toThrow(`SqlParams.int() takes a whole number (or null), not ${String(value)}.`);
+      expect(() => new SqlParams().bigint(value)).toThrow(`SqlParams.bigint() takes a whole number (or null), not ${String(value)}.`);
+    }
+    expect(() => new SqlParams().int('7' as never)).toThrow(TypeError);
+
     const q = new SqlParams();
     expect(q.equals('group_key', null)).toBe('group_key IS NULL');
     expect(q.equals('group_key', 'g1')).toBe('group_key = $1::text');
@@ -35,6 +41,15 @@ describe('SqlParams', () => {
 });
 
 describe('columns() and the readers', () => {
+  it('are the readers the root entry exports, the same on both dialects: a package maps the rows of both of its stores with them', async () => {
+    const root = await import('../../lib/index.js');
+    const mysql = await import('../../lib/mysql/index.js');
+    expect([root.toText, root.toInt, root.toBool, root.toJson]).toEqual([toText, toInt, toBool, toJson]);
+    expect([mysql.toText, mysql.toInt, mysql.toBool, mysql.toJson]).toEqual([toText, toInt, toBool, toJson]);
+    // PostgreSQL's boolean reads 'true', MySQL's BOOLEAN '1'.
+    expect([toBool('true'), toBool('1'), toBool(1), toBool('false'), toBool('0'), toBool(0)]).toEqual([true, true, true, false, false, false]);
+  });
+
   it('cast each column to text under its own name, prefixed with the alias, and read the text back', () => {
     expect(columns(['id', 'run_at'])).toBe('id::text AS id, run_at::text AS run_at');
     expect(columns(['id', 'run_at'], 'j')).toBe('j.id::text AS id, j.run_at::text AS run_at');

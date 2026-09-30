@@ -80,7 +80,7 @@ function wholeNumber(value: number | null, method: string): string | null {
     return null;
   }
   if (!Number.isSafeInteger(value)) {
-    throw new TypeError(`SqlParams.${method}() takes a whole number (or null), not ${JSON.stringify(value) ?? String(value)}: MySQL would round it, or wrap it past 2^63, without an error.`);
+    throw new TypeError(`SqlParams.${method}() takes a whole number (or null), not ${String(value)}: MySQL would round it, or wrap it past 2^63, without an error.`);
   }
   return String(value);
 }
