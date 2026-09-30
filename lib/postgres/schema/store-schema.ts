@@ -14,6 +14,7 @@ import {
   resolveStoreOptions,
   schemaBehindMessage,
 } from '../../schema/index.js';
+import { databaseMessage } from '../../utils/error.util.js';
 import { assertReadCommittedDefault } from '../isolation/read-committed.js';
 import { advisoryLock } from '../sql/advisory-lock.js';
 import { quoteSchema } from '../sql/quote-schema.js';
@@ -162,8 +163,8 @@ export class StoreSchema {
    * Applies the migrations `schema` hasn't had yet, in one READ COMMITTED transaction that holds the advisory lock
    * `<packageName>:migrate:<schema>`: of processes that migrate together, one applies them, and the others wait for
    * its lock and find nothing to do. The lock is transaction-scoped, so it works behind a transaction-pooling
-   * PgBouncer. A failure rolls it all back, with the package's error (`cause`: the database's). Resolves to the
-   * versions applied.
+   * PgBouncer. A failure rolls it all back, with the package's error: its message ends with the database's, and its
+   * `cause` is the client's error. Resolves to the versions applied.
    */
   async migrate(executor: SqlExecutor, schema: string): Promise<number[]> {
     const s = quoteSchema(schema, this.storeName);
@@ -184,7 +185,7 @@ export class StoreSchema {
               await tx.query(statement);
             } catch (error) {
               throw this.createError(
-                `${this.storeName}: migrating schema "${schema}" from version ${version} to ${this.latest} failed, and nothing was applied: ${(error as Error)?.message ?? error}`,
+                `${this.storeName}: migrating schema "${schema}" from version ${version} to ${this.latest} failed, and nothing was applied: ${databaseMessage(error)}`,
                 { schema, version, requiredVersion: this.latest, cause: error },
               );
             }

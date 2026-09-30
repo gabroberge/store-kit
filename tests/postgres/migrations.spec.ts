@@ -16,7 +16,7 @@ import { fromDrizzle, fromPg, StoreSchema, type SqlTransaction, type StoreMigrat
 import { endPool } from '../support/postgres.js';
 import { archiveMigration, initialMigration, NoteSchemaError, noteSchema, noteSchemaOptions, noteSchemaWith } from '../fixtures/notes/note.schema.js';
 import { PostgresNoteStore } from '../fixtures/notes/postgres-note.store.js';
-import { onPostgres, recording, testDatabase } from './support.js';
+import { clients, onPostgres, recording, testDatabase } from './support.js';
 
 const { database, reason } = await testDatabase('migrations');
 const pools: pg.Pool[] = [];
@@ -153,6 +153,21 @@ describe('StoreSchema.migrate()', () => {
     expect(await rows('SELECT max(version) AS version FROM m_failing.migrations')).toEqual([{ version: 2 }]);
   });
 
+  it("fails a migration through Prisma with the database's message, not Prisma's invocation text", async () => {
+    const prisma = await clients.find((client) => client.name.startsWith('fromPrisma'))!.open(database!.url);
+    try {
+      await rows('CREATE SCHEMA m_prisma_taken');
+      await rows('CREATE TABLE m_prisma_taken.notes (id serial PRIMARY KEY)');
+      const error = await noteSchema.migrate(prisma.executor, 'm_prisma_taken').catch((e: unknown) => e);
+      expect((error as Error).message).toBe(
+        'PostgresNoteStore: migrating schema "m_prisma_taken" from version 0 to 2 failed, and nothing was applied: relation "notes" already exists',
+      );
+      expect((error as Error).cause).toMatchObject({ name: 'PrismaClientKnownRequestError' });
+    } finally {
+      await prisma.close();
+    }
+  });
+
   it("fails on a schema that has other tables of the store's names, and creates nothing", async () => {
     await rows('CREATE SCHEMA m_taken');
     await rows('CREATE TABLE m_taken.notes (id serial PRIMARY KEY)');
@@ -249,6 +264,21 @@ describe("drizzle-kit's statement breakpoints, on PGlite", () => {
       rmSync(folder, { recursive: true, force: true });
       await migrated.close();
       await byDrizzle.close();
+    }
+  });
+
+  it("fails a migration through Drizzle with the database's message, not Drizzle's \"Failed query\", and keeps Drizzle's error as the cause", async () => {
+    const pglite = new PGlite();
+    try {
+      const broken: StoreMigration = { version: 3, name: 'broken', up: () => ['SELECT 1 / 0'] };
+      const error = await noteSchemaWith([initialMigration, archiveMigration, broken])
+        .migrate(fromDrizzle(drizzle(pglite)), 'nest_notes')
+        .catch((e: unknown) => e);
+      expect((error as Error).message).toBe('PostgresNoteStore: migrating schema "nest_notes" from version 0 to 3 failed, and nothing was applied: division by zero');
+      const cause = (error as Error).cause as Error;
+      expect([cause.constructor.name, cause.message]).toEqual(['DrizzleQueryError', expect.stringMatching(/^Failed query: SELECT 1 \/ 0/)]);
+    } finally {
+      await pglite.close();
     }
   });
 
