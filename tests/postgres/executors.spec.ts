@@ -1,14 +1,14 @@
 /**
- * The executors on their own, through each of them on PostgreSQL (and through fromPg() on a single node-postgres
- * Client, and fromDrizzle() on PGlite): statements, transactions that commit, roll back and take an isolation level,
- * the application's transaction joined and anything else refused; and each client's particulars: what each takes as
- * the application's client and transaction object (another database's refused), a client in a failed transaction,
- * Kysely's plugins, Prisma's transaction limits.
+ * The executors: the executor contract (`@nestjs/store-kit/testing`) through each of them on PostgreSQL (and through
+ * fromPg() on a single node-postgres Client, and fromDrizzle() on PGlite), the words of their refusals, and each
+ * client's particulars: what each takes as the application's client and transaction object (another database's
+ * refused), a client in a failed transaction, Kysely's plugins, Prisma's transaction limits.
  */
 import { PrismaPg } from '@prisma/adapter-pg';
 import { CamelCasePlugin, Kysely, MysqlDialect, PostgresAdapter, PostgresDialect, SqliteDialect } from 'kysely';
 import pg from 'pg';
 import { fromDrizzle, fromKysely, fromPg, fromPrisma, fromTypeOrm } from '../../lib/postgres/index.js';
+import { sqlExecutorContract } from '../../lib/testing/index.js';
 import { PrismaClient } from '../fixtures/prisma/generated/client.js';
 import { endPool } from '../support/postgres.js';
 import { clients, onPostgres, openPglite, testDatabase, type Client } from './support.js';
@@ -42,86 +42,29 @@ async function openSingleClient(url: string): Promise<Client> {
 }
 
 const targets = [
-  ...clients.map((factory, i) => ({ name: `${factory.name} on PostgreSQL`, open: () => factory.open(database!.url), table: `probes_${i}`, skip: reason })),
-  { name: 'fromPg (a single node-postgres Client) on PostgreSQL', open: () => openSingleClient(database!.url), table: 'probes_single', skip: reason },
-  { name: 'fromDrizzle (PGlite)', open: openPglite, table: 'probes', skip: undefined },
+  ...clients.map((factory) => ({ name: `${factory.name} on PostgreSQL`, open: () => factory.open(database!.url), skip: reason })),
+  { name: 'fromPg (a single node-postgres Client) on PostgreSQL', open: () => openSingleClient(database!.url), skip: reason },
+  { name: 'fromDrizzle (PGlite)', open: openPglite, skip: undefined },
 ];
 
-describe.each(targets)('$name', ({ open, table, skip }) => {
+describe.each(targets)('$name', ({ open, skip }) => {
   let client: Client;
 
   beforeAll(async () => {
     if (!skip) {
       client = await open();
-      await client.executor.query(`CREATE TABLE ${table} (id text PRIMARY KEY)`);
     }
   });
   afterAll(() => client?.close());
+  if (skip) {
+    beforeEach((context) => context.skip(skip));
+  }
 
-  beforeEach(async (context) => {
-    if (skip) {
-      context.skip(skip);
-    }
-    await client.executor.query(`DELETE FROM ${table}`);
-  });
+  for (const c of sqlExecutorContract(() => ({ executor: client.executor, transaction: (work) => client.transaction(work), root: client.root }))) {
+    it(c.name, c.run);
+  }
 
-  const probes = async () => (await client.executor.query<{ id: string }>(`SELECT id FROM ${table} ORDER BY id`)).map((row) => row.id);
-
-  it('runs a statement with its parameters in order, and answers every row of one that returns some', async () => {
-    const rows = await client.executor.query<{ a: string; b: string | null; n: string }>('SELECT $2::text AS a, $1::text AS b, $3::text::bigint::text AS n', [
-      null,
-      "O'Reilly — ü 🚀 $1",
-      '9007199254740991',
-    ]);
-    expect(rows).toEqual([{ a: "O'Reilly — ü 🚀 $1", b: null, n: '9007199254740991' }]);
-    expect(await client.executor.query(`INSERT INTO ${table} (id) VALUES ($1::text)`, ['plain'])).toEqual([]);
-    expect(await client.executor.query(`DELETE FROM ${table} WHERE id = $1::text RETURNING id`, ['plain'])).toEqual([{ id: 'plain' }]);
-  });
-
-  it('commits a transaction whose work resolves, with its result, and rolls back one whose work throws', async () => {
-    expect(
-      await client.executor.transaction(async (tx) => {
-        await tx.query(`INSERT INTO ${table} (id) VALUES ($1::text)`, ['kept']);
-        return (await tx.query<{ id: string }>(`SELECT id FROM ${table} WHERE id = $1::text`, ['kept'])).length;
-      }),
-    ).toBe(1);
-
-    await expect(
-      client.executor.transaction(async (tx) => {
-        await tx.query(`INSERT INTO ${table} (id) VALUES ($1::text)`, ['undone']);
-        throw new Error('changed my mind');
-      }),
-    ).rejects.toThrow('changed my mind');
-    // Drizzle wraps the driver's error ("Failed query: ..."), with it as the cause.
-    await expect(client.executor.transaction((tx) => tx.query(`INSERT INTO ${table} (id) VALUES ($1::text), ($1::text)`, ['twice']))).rejects.toSatisfy(
-      (error: Error) => /duplicate key/.test(`${error.message} ${(error.cause as Error | undefined)?.message}`),
-    );
-    expect(await probes()).toEqual(['kept']);
-  });
-
-  it('runs a transaction at the isolation level asked for', async () => {
-    const level = (options?: { isolationLevel: 'read committed' | 'repeatable read' | 'serializable' }) =>
-      client.executor.transaction(async (tx) => (await tx.query<{ level: string }>("SELECT current_setting('transaction_isolation') AS level"))[0]!.level, options);
-    expect(await level({ isolationLevel: 'read committed' })).toBe('read committed');
-    expect(await level({ isolationLevel: 'repeatable read' })).toBe('repeatable read');
-    expect(await level({ isolationLevel: 'serializable' })).toBe('serializable');
-    expect(await level()).toBe('read committed');
-    await expect(client.executor.transaction(async () => 1, { isolationLevel: `snapshot; DROP TABLE ${table}` as 'serializable' })).rejects.toThrow(TypeError);
-  });
-
-  it("joins the application's transaction object, and refuses its database, pool or client and anything else", async () => {
-    await expect(
-      client.transaction(async (tx) => {
-        await client.executor.wrapTransaction(tx).query(`INSERT INTO ${table} (id) VALUES ($1::text)`, ['joined']);
-        throw new Error('rolled back');
-      }),
-    ).rejects.toThrow('rolled back');
-    await client.transaction((tx) => client.executor.wrapTransaction(tx).query(`INSERT INTO ${table} (id) VALUES ($1::text)`, ['committed']));
-    expect(await probes()).toEqual(['committed']);
-
-    for (const junk of [client.root, client.executor, {}, null, undefined, 42]) {
-      expect(() => client.executor.wrapTransaction(junk)).toThrow(TypeError);
-    }
+  it('is a PostgreSQL executor, and says what to pass instead of the database, pool or client, or of anything else', () => {
     expect(client.executor.dialect).toBe('postgres');
     expect(() => client.executor.wrapTransaction(client.root)).toThrow(/^(Pass the .* not |The node-postgres client isn't in a transaction)/);
     expect(() => client.executor.wrapTransaction({})).toThrow(/^Pass the .* got an object\.$/);
