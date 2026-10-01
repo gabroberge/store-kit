@@ -173,6 +173,11 @@ WHERE THREAD_ID = PS_CURRENT_THREAD_ID() AND (SELECT COUNT(*) FROM ${table}) >= 
         { id: "O'Reilly — ü 🚀 \\ \n", small: -2147483648, big: 9007199254740991, flag: true, doc: { a: [1, 'two', null, { deep: "it's ? $2" }], n: 1.5 }, note: '' },
         { id: 'nulls', small: null, big: null, flag: false, doc: 'a JSON string', note: null },
         { id: 'no-json', small: 0, big: 0, flag: false, doc: null, note: 'x' },
+        // Doubles MySQL 8's JSON text parser reads 1 ulp off (SqlParams.json() sets them with CAST(? AS DOUBLE)), at
+        // paths of every kind, a bare one, and many in one document.
+        { id: 'doubles', small: 1, big: 1, flag: true, doc: DOUBLES, note: null },
+        { id: 'a bare double', small: 1, big: 1, flag: true, doc: 0.12274816974613123, note: null },
+        { id: 'many doubles', small: 1, big: 1, flag: true, doc: Array.from({ length: 500 }, (_, i) => (i + 1) / 7 + 0.1), note: null },
       ];
       for (const row of rows) {
         const p = new SqlParams();
@@ -192,8 +197,43 @@ VALUES (${p.text(row.id)}, ${p.int(row.small)}, ${p.bigint(row.big)}, ${p.bool(r
         const values = { id: toText(read?.id), small: toInt(read?.small_n), big: toInt(read?.big_n), flag: toBool(read?.is_flag), doc: toJson(read?.doc_json), note: toText(read?.note_text) };
         equal(values, row, `a row written with SqlParams and read with columns() (${JSON.stringify(row.id)})`);
       }
+
+      // A document a statement reads with JSON_TABLE(), as the stores' batch writes do.
+      const p = new SqlParams();
+      const read = await executor.query<{ n: string; value: string }>(
+        `SELECT CAST(j.n AS CHAR) AS n, CAST(j.value AS CHAR) AS value
+FROM JSON_TABLE(${p.json([{ value: 0.1 + 0.2 }, { value: 7e-30 }, { value: 2 }])}, '$[*]' COLUMNS (n FOR ORDINALITY, value json PATH '$.value')) AS j
+ORDER BY j.n`,
+        p.values,
+      );
+      equal(
+        read.map((row) => toJson(row.value)),
+        [0.1 + 0.2, 7e-30, 2],
+        'the doubles of a SqlParams.json() document read with JSON_TABLE()',
+      );
     },
   },
+};
+
+/** Doubles a JSON text parser can round, under member names a JSON path must quote (`__proto__` an own member). */
+const DOUBLES: Record<string, unknown> = {
+  sum: 0.1 + 0.2,
+  tiny: 7e-30,
+  max: Number.MAX_VALUE,
+  min: Number.MIN_VALUE,
+  huge: 1.2345678901234567e300,
+  unsafe: 2 ** 60,
+  negative: -0.12274816974613123,
+  list: [0.12274816974613123, [1.5, 'text', null, { deep: 0.49355803101514717 }], 3],
+  'with "quote"': 1 / 3,
+  'back\\slash': 2 / 3,
+  'dot.ted': 0.12274816974613124,
+  'sp ace': 0.30000000000000004,
+  '': 0.9999999999999999,
+  '*': 0.1 + 0.7,
+  '$[0]': 1e21 + 0.5,
+  'ü 🚀\n': 1.7976931348623157e-300,
+  ['__proto__']: 0.1 + 0.6,
 };
 
 /** The isolation level of the transaction `tx` runs in, and the connection's own. */

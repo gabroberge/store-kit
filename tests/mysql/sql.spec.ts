@@ -68,6 +68,26 @@ describe('SqlParams on MySQL', () => {
     }
   });
 
+  it('writes JSON with numbers other than safe integers as JSON_SET() of each at its path, cast from text as a DOUBLE', () => {
+    const p = new SqlParams();
+    expect(p.json({ n: 2 ** 53 - 1, list: [1, 0.5], 'a "b"': { c: 1e-30 } })).toBe('JSON_SET(CAST(? AS JSON), ?, CAST(? AS DOUBLE), ?, CAST(? AS DOUBLE))');
+    expect(p.json(0.1 + 0.2)).toBe('JSON_SET(CAST(? AS JSON), ?, CAST(? AS DOUBLE))');
+    expect(p.values).toEqual([
+      '{"n":9007199254740991,"list":[1,0],"a \\"b\\"":{"c":0}}',
+      '$."list"[1]',
+      '0.5',
+      '$."a \\"b\\""."c"',
+      '1e-30',
+      '0',
+      '$',
+      '0.30000000000000004',
+    ]);
+    // What JSON.stringify() writes is what's walked: toJSON(), and no undefined members.
+    const q = new SqlParams();
+    expect(q.json({ at: new Date(0), skipped: undefined, n: 2 ** 60 })).toBe('JSON_SET(CAST(? AS JSON), ?, CAST(? AS DOUBLE))');
+    expect(q.values).toEqual(['{"at":"1970-01-01T00:00:00.000Z","n":0}', '$."n"', '1152921504606847000']);
+  });
+
   describe('on the server', () => {
     onMysql(reason);
 

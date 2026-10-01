@@ -49,9 +49,29 @@ export class SqlParams {
     return this.add(value ? '1' : '0', 'CAST(? AS UNSIGNED)');
   }
 
-  /** `CAST(? AS JSON)`, for a JSON column; `null` and `undefined` as SQL `NULL`. */
+  /**
+   * `CAST(? AS JSON)`, for a JSON column; `null` and `undefined` as SQL `NULL`. A value holding numbers other than safe
+   * integers (`0.1`, `1e-30`) goes as `JSON_SET(CAST(? AS JSON), ?, CAST(? AS DOUBLE), ...)`: a `0` in the document's
+   * text, then each number set at its path. MySQL 8's JSON text parser rounds a double whose digits pass 2^53, or
+   * whose exponent is large, to a neighbor (`0.9999999999999999` comes back `1`, `7e-30` `6.999999999999999e-30`),
+   * where `CAST(? AS DOUBLE)` reads it exactly; MySQL 9 parses JSON text exactly, and stores the same double either way.
+   */
   json(value: unknown): string {
-    return this.add(value === null || value === undefined ? null : JSON.stringify(value), 'CAST(? AS JSON)');
+    if (value === null || value === undefined) {
+      return this.add(null, 'CAST(? AS JSON)');
+    }
+    const text = JSON.stringify(value);
+    const doubles: Array<[path: string, value: number]> = [];
+    // A function or a symbol stringifies to undefined, as before: nothing to walk.
+    const document = text === undefined ? undefined : zeroDoubles(JSON.parse(text), '$', doubles);
+    if (doubles.length === 0) {
+      return this.add(text, 'CAST(? AS JSON)');
+    }
+    this.values.push(JSON.stringify(document));
+    for (const [path, double] of doubles) {
+      this.values.push(path, String(double));
+    }
+    return `JSON_SET(CAST(? AS JSON), ${doubles.map(() => '?, CAST(? AS DOUBLE)').join(', ')})`;
   }
 
   /**
@@ -96,6 +116,31 @@ export class SqlParams {
     this.values.push(value);
     return placeholder;
   }
+}
+
+/**
+ * `value`, parsed JSON (changed in place), with each number but a safe integer replaced by `0`, its JSON path
+ * (`$."a"[2]`) and value pushed onto `doubles` in document order. Member names go quoted as JSON strings, which
+ * MySQL's paths take whatever they hold (`"`, `\`, `.`, `*`, the empty name).
+ */
+function zeroDoubles(value: unknown, path: string, doubles: Array<[string, number]>): unknown {
+  if (typeof value === 'number') {
+    if (Number.isSafeInteger(value)) {
+      return value;
+    }
+    doubles.push([path, value]);
+    return 0;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => (value[index] = zeroDoubles(item, `${path}[${index}]`, doubles)));
+  } else if (value !== null && typeof value === 'object') {
+    // Assigned, not copied: JSON.parse() makes a `__proto__` member an own property, which an assignment keeps.
+    const object = value as Record<string, unknown>;
+    for (const key of Object.keys(object)) {
+      object[key] = zeroDoubles(object[key], `${path}.${JSON.stringify(key)}`, doubles);
+    }
+  }
+  return value;
 }
 
 /** `value` as text, after checking it's a whole number: MySQL would round `1.5` or wrap `2^63` without an error. */
