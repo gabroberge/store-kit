@@ -8,9 +8,10 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { CamelCasePlugin, Kysely, MysqlDialect, PostgresAdapter, PostgresDialect, SqliteDialect } from 'kysely';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
+import { Sequelize } from 'sequelize';
 import { isNotATransactionError as fromTheRoot } from '../../lib/index.js';
 import { isNotATransactionError as fromMysqlEntry } from '../../lib/mysql/index.js';
-import { advisoryLock, fromDrizzle, fromKysely, fromPg, fromPrisma, fromTypeOrm, isNotATransactionError } from '../../lib/postgres/index.js';
+import { advisoryLock, fromDrizzle, fromKysely, fromPg, fromPrisma, fromSequelize, fromTypeOrm, isNotATransactionError } from '../../lib/postgres/index.js';
 import { sqlExecutorContract } from '../../lib/testing/index.js';
 import { PrismaClient } from '../fixtures/prisma/generated/client.js';
 import { endPool } from '../support/postgres.js';
@@ -304,13 +305,20 @@ describe('the code of a refusal of anything but a transaction', () => {
         () => kysely.wrapTransaction({ isTransaction: true, executeQuery() {}, withoutPlugins() {}, getExecutor: () => mysqlKysely.getExecutor() }),
         () => fromTypeOrm(source as never).wrapTransaction({ '@instanceof': Symbol.for('EntityManager'), connection: mysqlSource, queryRunner: { isTransactionActive: true, connection: mysqlSource } }),
         () => fromPrisma({ $queryRawUnsafe() {}, $executeRawUnsafe() {}, $transaction() {}, $connect() {} } as never).wrapTransaction({ $connect() {}, $queryRawUnsafe() {} }),
+        () => fromSequelize(postgresSequelize()).wrapTransaction(postgresSequelize()),
       ];
       for (const refusal of refusals) {
         expect(thrown(refusal)).toMatchObject({ name: 'TypeError', code: 'ERR_SQL_NOT_A_TRANSACTION' });
       }
 
       // The executors' other TypeErrors are about their own arguments: no code.
-      for (const misuse of [() => fromPg({} as never), () => fromKysely(mysqlKysely as never), () => fromTypeOrm(mysqlSource as never)]) {
+      for (const misuse of [
+        () => fromPg({} as never),
+        () => fromKysely(mysqlKysely as never),
+        () => fromTypeOrm(mysqlSource as never),
+        () => fromSequelize({} as never),
+        () => fromSequelize(new Sequelize('mysql://root:unused@127.0.0.1:1/none', { dialect: 'mysql', logging: false, dialectOptions: { flags: '' } })),
+      ]) {
         const error = thrown(misuse);
         expect(error).toBeInstanceOf(TypeError);
         expect(isNotATransactionError(error)).toBe(false);
@@ -331,3 +339,8 @@ describe('the code of a refusal of anything but a transaction', () => {
     }
   });
 });
+
+/** Nothing connects: Sequelize opens its pool at the first query. */
+function postgresSequelize(): Sequelize {
+  return new Sequelize('postgres://nobody@127.0.0.1:1/none', { dialect: 'postgres', logging: false });
+}

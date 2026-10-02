@@ -5,7 +5,7 @@
 // Executors: a store's SQL through the application's pool or ORM, and its transactions (`SqlExecutor` here is
 // PostgreSQL's: the root's `SqlExecutor<'postgres'>`), and their refusal of an object that isn't a transaction they
 // can join, by its code
-export { fromDrizzle, fromKysely, fromPg, fromPrisma, fromTypeOrm, type PrismaExecutorOptions } from './executors/index.js';
+export { fromDrizzle, fromKysely, fromPg, fromPrisma, fromSequelize, fromTypeOrm, type PrismaExecutorOptions } from './executors/index.js';
 export type { SqlExecutor } from './interfaces/index.js';
 export type { SqlIsolationLevel, SqlTransaction, SqlTransactionOptions } from '../interfaces/index.js';
 export { isNotATransactionError } from '../sql/index.js';

@@ -1,5 +1,5 @@
 /**
- * The database clients an application may hand a store (node-postgres, Drizzle on node-postgres and on PGlite,
+ * The database clients an application may hand a store (node-postgres, Sequelize, Drizzle on node-postgres and on PGlite,
  * TypeORM, Prisma, Kysely), each with the ORM's own way of running a transaction, and a database per test file on
  * PostgreSQL (`SQL_TEST_PG_URL`, else a throwaway cluster, else those tests are skipped with the reason), through
  * tests/support/postgres.ts, which names (`skit_`) and sweeps them.
@@ -11,9 +11,10 @@ import { pgTable, text } from 'drizzle-orm/pg-core';
 import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
+import { Sequelize, type Transaction } from 'sequelize';
 import { Column, DataSource, Entity, PrimaryColumn } from 'typeorm';
 import type { SqlExecutor as AnySqlExecutor, SqlDialect } from '../../lib/index.js';
-import { fromDrizzle, fromKysely, fromPg, fromPrisma, fromTypeOrm, type SqlExecutor } from '../../lib/postgres/index.js';
+import { fromDrizzle, fromKysely, fromPg, fromPrisma, fromSequelize, fromTypeOrm, type SqlExecutor } from '../../lib/postgres/index.js';
 import { PrismaClient } from '../fixtures/prisma/generated/client.js';
 import { endPool, startPostgres } from '../support/postgres.js';
 
@@ -160,8 +161,27 @@ export const kyselyClient: ClientFactory = {
   },
 };
 
+/** Sequelize on the same server as the other clients. PostgreSQL has no `FOUND_ROWS` flag to set. */
+export const sequelizeClient: ClientFactory = {
+  name: 'fromSequelize',
+  async open(url) {
+    const sequelize = new Sequelize(url, { dialect: 'postgres', logging: false, pool: { max: 10, min: 0 } });
+    return {
+      name: this.name,
+      executor: fromSequelize(sequelize),
+      root: sequelize,
+      transaction: (work, isolation) =>
+        sequelize.transaction(isolation ? { isolationLevel: isolation.toUpperCase() as Transaction.ISOLATION_LEVELS } : {}, (tx) => work(tx)),
+      insertOrder: async (tx, id) => {
+        await sequelize.query("INSERT INTO orders (id, status) VALUES (:id, 'placed')", { replacements: { id }, transaction: tx as Transaction });
+      },
+      close: () => sequelize.close(),
+    };
+  },
+};
+
 /** Every client on PostgreSQL. */
-export const clients = [pgClient, drizzleClient, typeOrmClient, prismaClient, kyselyClient];
+export const clients = [pgClient, drizzleClient, typeOrmClient, prismaClient, kyselyClient, sequelizeClient];
 
 /** Drizzle on PGlite: PostgreSQL in-process, one connection, so every transaction waits for the one before it. */
 export async function openPglite(): Promise<Client & { pglite: PGlite }> {
