@@ -1,6 +1,6 @@
 /**
- * The database clients an application may hand a MySQL store (mysql2, Drizzle, TypeORM, Prisma with its MariaDB
- * adapter, Kysely), each with the ORM's own way of running a transaction, and a database per test file on the MySQL
+ * The database clients an application may hand a MySQL store (mysql2, Sequelize, Drizzle, TypeORM, Prisma with its
+ * MariaDB adapter, Kysely), each with the ORM's own way of running a transaction, and a database per test file on the MySQL
  * of `SQL_TEST_MYSQL_URL` (else those tests are skipped with the reason), through tests/support/mysql.ts, which names
  * (`skit_`) and sweeps them. Every pool has at most 4 connections: the server may be shared.
  */
@@ -10,8 +10,9 @@ import { mysqlTable, varchar } from 'drizzle-orm/mysql-core';
 import { Kysely, MysqlDialect } from 'kysely';
 import mysqlCallbacks from 'mysql2';
 import mysql from 'mysql2/promise';
+import { Sequelize, type Transaction } from 'sequelize';
 import { Column, DataSource, Entity, PrimaryColumn } from 'typeorm';
-import { fromDrizzle, fromKysely, fromMysql2, fromPrisma, fromTypeOrm, type SqlExecutor } from '../../lib/mysql/index.js';
+import { fromDrizzle, fromKysely, fromMysql2, fromPrisma, fromSequelize, fromTypeOrm, type SqlExecutor } from '../../lib/mysql/index.js';
 import { PrismaClient } from '../fixtures/prisma-mysql/generated/client.js';
 import { startMysql } from '../support/mysql.js';
 
@@ -195,8 +196,35 @@ export const singleConnectionClient: ClientFactory = {
   },
 };
 
+/**
+ * Sequelize's MySQL manager sets `flags: "-FOUND_ROWS"` and then copies `dialectOptions` over it. `flags: ''` keeps
+ * mysql2's default, which includes `FOUND_ROWS`. The manager's own default is the flag off.
+ */
+export const sequelizeClient: ClientFactory = {
+  name: 'fromSequelize',
+  async open(url) {
+    const sequelize = new Sequelize(url, {
+      dialect: 'mysql',
+      logging: false,
+      pool: { max: POOL_SIZE, min: 0 },
+      dialectOptions: { flags: '' },
+    });
+    return {
+      name: this.name,
+      executor: fromSequelize(sequelize),
+      root: sequelize,
+      transaction: (work, isolation) =>
+        sequelize.transaction(isolation ? { isolationLevel: isolation.toUpperCase() as Transaction.ISOLATION_LEVELS } : {}, (tx) => work(tx)),
+      insertOrder: async (tx, id) => {
+        await sequelize.query("INSERT INTO orders (id, status) VALUES (:id, 'placed')", { replacements: { id }, transaction: tx as Transaction });
+      },
+      close: () => sequelize.close(),
+    };
+  },
+};
+
 /** Every client on MySQL. */
-export const clients = [mysql2Client, drizzleClient, typeOrmClient, prismaClient, kyselyClient];
+export const clients = [mysql2Client, drizzleClient, typeOrmClient, prismaClient, kyselyClient, sequelizeClient];
 
 /**
  * The MariaDB connector's settings for `url`. `allowPublicKeyRetrieval`: MySQL's `caching_sha2_password` over a

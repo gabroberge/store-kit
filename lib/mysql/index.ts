@@ -4,7 +4,7 @@
 
 // Executors: a store's SQL through the application's pool or ORM, and its transactions (`SqlExecutor<'mysql'>`), and
 // their refusal of an object that isn't a transaction they can join, by its code
-export { fromDrizzle, fromKysely, fromMysql2, fromPrisma, fromTypeOrm } from './executors/index.js';
+export { fromDrizzle, fromKysely, fromMysql2, fromPrisma, fromSequelize, fromTypeOrm } from './executors/index.js';
 export type { PrismaExecutorOptions } from '../postgres/executors/prisma.executor.js';
 export type { SqlExecutor, SqlTransaction } from './interfaces/index.js';
 export type { SqlExecuteResult, SqlIsolationLevel, SqlTransactionOptions } from '../interfaces/index.js';

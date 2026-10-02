@@ -12,8 +12,9 @@ import { CamelCasePlugin, Kysely, MysqlDialect, PostgresDialect, SqliteDialect }
 import mysqlCallbacks from 'mysql2';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
+import { Sequelize } from 'sequelize';
 import { DataSource } from 'typeorm';
-import { fromDrizzle, fromKysely, fromMysql2, fromPrisma, fromTypeOrm, isNotATransactionError, lockKeys, mysqlErrorCode } from '../../lib/mysql/index.js';
+import { fromDrizzle, fromKysely, fromMysql2, fromPrisma, fromSequelize, fromTypeOrm, isNotATransactionError, lockKeys, mysqlErrorCode } from '../../lib/mysql/index.js';
 import { fromDrizzle as fromPgDrizzle, fromKysely as fromPgKysely, fromTypeOrm as fromPgTypeOrm } from '../../lib/postgres/index.js';
 import { sqlExecutorContract } from '../../lib/testing/index.js';
 import { PrismaClient } from '../fixtures/prisma-mysql/generated/client.js';
@@ -308,6 +309,7 @@ describe("the code of a MySQL executor's refusal of anything but a transaction",
         () => kysely.wrapTransaction({ isTransaction: true, executeQuery() {}, withoutPlugins() {}, getExecutor: () => postgres.getExecutor() }),
         () => fromTypeOrm(source as never).wrapTransaction({ '@instanceof': Symbol.for('EntityManager'), connection: pgSource, queryRunner: { isTransactionActive: true, connection: pgSource } }),
         () => fromPrisma({ $queryRawUnsafe() {}, $executeRawUnsafe() {}, $transaction() {}, $connect() {} } as never).wrapTransaction({ $connect() {}, $queryRawUnsafe() {} }),
+        () => fromSequelize(sequelizeWithFlags('')).wrapTransaction(sequelizeWithFlags('')),
       ];
       for (const refusal of refusals) {
         let error: unknown;
@@ -320,7 +322,15 @@ describe("the code of a MySQL executor's refusal of anything but a transaction",
       }
 
       // The executors' other TypeErrors are about their own arguments: no code.
-      for (const misuse of [() => fromMysql2({} as never), () => fromKysely(postgres as never), () => fromTypeOrm(pgSource as never)]) {
+      for (const misuse of [
+        () => fromMysql2({} as never),
+        () => fromKysely(postgres as never),
+        () => fromTypeOrm(pgSource as never),
+        () => fromSequelize({} as never),
+        () => fromSequelize(sequelizeWithFlags(undefined)),
+        () => fromSequelize(sequelizeWithFlags('-found_rows')),
+        () => fromSequelize(new Sequelize('postgres://unused@127.0.0.1:1/none', { dialect: 'postgres', logging: false })),
+      ]) {
         expect(misuse).toThrow(TypeError);
         try {
           misuse();
@@ -333,3 +343,12 @@ describe("the code of a MySQL executor's refusal of anything but a transaction",
     }
   });
 });
+
+/** Nothing connects: Sequelize opens its pool at the first query. Omitting `flags` is Sequelize's own `"-FOUND_ROWS"`. */
+function sequelizeWithFlags(flags: string | undefined): Sequelize {
+  return new Sequelize('mysql://root:unused@127.0.0.1:1/none', {
+    dialect: 'mysql',
+    logging: false,
+    ...(flags === undefined ? {} : { dialectOptions: { flags } }),
+  });
+}

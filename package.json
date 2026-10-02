@@ -69,6 +69,7 @@
     "prisma": "7.10.0",
     "reflect-metadata": "0.2.2",
     "release-it": "21.1.0",
+    "sequelize": "6.37.8",
     "typeorm": "1.1.1",
     "typescript": "7.0.2",
     "vite": "8.3.0",
@@ -78,7 +79,8 @@
     "drizzle-orm": ">=0.29.0 || >=1.0.0-0",
     "kysely": ">=0.27.0",
     "mysql2": "^3.0.0",
-    "pg": "^8.0.0"
+    "pg": "^8.0.0",
+    "sequelize": ">=6.37.0"
   },
   "peerDependenciesMeta": {
     "drizzle-orm": {
@@ -91,6 +93,9 @@
       "optional": true
     },
     "pg": {
+      "optional": true
+    },
+    "sequelize": {
       "optional": true
     }
   },

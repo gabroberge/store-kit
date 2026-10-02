@@ -12,7 +12,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { SqlExecutor as AnySqlExecutor } from '../../lib/index.js';
-import { fromMysql2, type SqlExecutor as MySqlExecutor, type StoreOptions as MySqlStoreOptions } from '../../lib/mysql/index.js';
+import { fromMysql2, fromSequelize, type SqlExecutor as MySqlExecutor, type StoreOptions as MySqlStoreOptions } from '../../lib/mysql/index.js';
 import { fromPg, type SqlExecutor, type StoreOptions } from '../../lib/postgres/index.js';
 import { MySqlNoteStore } from '../fixtures/notes/mysql-note.store.js';
 import { PostgresNoteStore } from '../fixtures/notes/postgres-note.store.js';
@@ -20,8 +20,12 @@ import { PostgresNoteStore } from '../fixtures/notes/postgres-note.store.js';
 /** Never called: what compiles in it, and what doesn't, is the test (the repo's typecheck runs it). */
 export function typeChecks(postgres: SqlExecutor<'postgres'>, mysql: MySqlExecutor<'mysql'>): unknown[] {
   // Each dialect's executors where theirs go, and either where either goes.
-  const either: AnySqlExecutor[] = [postgres, mysql, fromPg({} as never), fromMysql2({} as never)];
-  const fits = [new PostgresNoteStore({ executor: fromPg({} as never) }), new MySqlNoteStore({ executor: fromMysql2({} as never) })];
+  const either: AnySqlExecutor[] = [postgres, mysql, fromPg({} as never), fromMysql2({} as never), fromSequelize({} as never)];
+  const fits = [
+    new PostgresNoteStore({ executor: fromPg({} as never) }),
+    new MySqlNoteStore({ executor: fromMysql2({} as never) }),
+    new MySqlNoteStore({ executor: fromSequelize({} as never) }),
+  ];
 
   // @ts-expect-error A MySQL executor where a PostgreSQL one goes
   const toPostgres: SqlExecutor<'postgres'> = mysql;
