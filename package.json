@@ -1,0 +1,52 @@
+{
+	"name": "store-kit",
+	"private": true,
+	"workspaces": [
+		"apps/*",
+		"packages/*"
+	],
+	"type": "module",
+	"scripts": {
+		"build": "turbo run build",
+		"format": "oxfmt",
+		"format:check": "oxfmt --check",
+		"lint": "turbo run lint",
+		"prepare": "husky",
+		"start:dev": "turbo run start:dev",
+		"test": "turbo run test",
+		"typecheck": "turbo run typecheck"
+	},
+	"devDependencies": {
+		"@changesets/changelog-github": "^1.0.1",
+		"@changesets/cli": "^3.0.3",
+		"@commitlint/cli": "^21.2.3",
+		"@commitlint/config-conventional": "^21.2.4",
+		"@eslint/js": "^10.0.1",
+		"@softarc/eslint-plugin-sheriff": "^0.20.0",
+		"@softarc/sheriff-core": "^0.19.6",
+		"@types/node": "^26.6.2",
+		"@vitest/coverage-v8": "^5.0.0",
+		"@vitest/eslint-plugin": "^1.6.27",
+		"eslint": "^10.11.0",
+		"eslint-plugin-absolute": "^0.13.0",
+		"eslint-plugin-perfectionist": "^5.13.0",
+		"husky": "^9.1.7",
+		"lint-staged": "^17.6.0",
+		"oxfmt": "^0.74.0",
+		"tsc-files": "^1.1.4",
+		"tsdown": "^0.23.0",
+		"turbo": "^2.11.4",
+		"typescript": "^6.0.3",
+		"typescript-eslint": "^8.70.1",
+		"vitest": "^5.0.3"
+	},
+	"devEngines": {
+		"packageManager": {
+			"name": "bun",
+			"version": "1.4.0"
+		}
+	},
+	"engines": {
+		"node": ">=26"
+	}
+}

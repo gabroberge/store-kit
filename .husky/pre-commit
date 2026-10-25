@@ -1,0 +1,6 @@
+cleanup_tsc_files() {
+	find . -maxdepth 3 -regextype posix-extended -regex '.*/tsconfig\.[a-z0-9]{8,}\.json' -delete
+}
+
+trap cleanup_tsc_files EXIT
+bunx lint-staged --no-stash
