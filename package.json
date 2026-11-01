@@ -24,7 +24,7 @@
 		"@eslint/js": "^10.0.1",
 		"@softarc/eslint-plugin-sheriff": "^0.20.0",
 		"@softarc/sheriff-core": "^0.19.6",
-		"@types/node": "^26.6.2",
+		"@types/node": "^26.6.6",
 		"@vitest/coverage-v8": "^5.0.0",
 		"@vitest/eslint-plugin": "^1.6.27",
 		"eslint": "^10.11.0",
